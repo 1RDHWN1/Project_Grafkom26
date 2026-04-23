@@ -1154,6 +1154,7 @@ class EclipseSimulation:
                 elif event.key == K_f:
                     self.free_cam_active = not self.free_cam_active
                     if self.free_cam_active:
+                        
                         pygame.event.set_grab(True)        
                         pygame.mouse.set_visible(False)   
                         # Reset rel mouse agar tidak lompat
