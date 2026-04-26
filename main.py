@@ -1,33 +1,23 @@
 """
-=============================================================
-  SIMULASI GERHANA 3D - Kota + Luar Angkasa
-  Engine : PyOpenGL + pygame
-  Cara install :
-    pip install PyOpenGL PyOpenGL_accelerate pygame numpy
-  Cara jalankan :
-    python eclipse_simulation.py
-=============================================================
-  KONTROL :
-    SCROLL UP/DOWN  - Pindah antara scene kota dan luar angkasa
-    MOUSE DRAG      - Putar kamera (orbit mode)
-    F               - Toggle Free Camera (terbang bebas)
-    W/A/S/D         - Gerak maju/kiri/mundur/kanan (free cam)
-    Q/E_key         - Naik/turun (free cam)
-    SHIFT           - Terbang lebih cepat (free cam)
-    E               - Picu / Percepat Gerhana Matahari
-    L               - Picu / Percepat Gerhana Bulan
-    R               - Reset ke kondisi normal
-    SPACE           - Percepat semua gerhana yang sedang aktif
-    ESC             - Keluar
-=============================================================
+╔══════════════════════════════════════════════════════════════════╗
+║        SIMULASI GERHANA 3D  v5  —  OpenGL + PyGame              ║
+╠══════════════════════════════════════════════════════════════════╣
+║  [F] Free Cam | W/A/S/D Q/E SHIFT | Scroll Kota<->Angkasa       ║
+║  SPACE (tahan) Percepat x5 | R Reset | ESC Keluar               ║
+╚══════════════════════════════════════════════════════════════════╝
+
+PERUBAHAN v5 vs v4:
+  - Matahari di kota: ukuran 2x lebih besar, halo berlapis tebal,
+    sinar-sinar matahari berputar, cincin corona saat gerhana,
+    prominensi merah, selalu terlihat jelas di langit
+  - Bulan di kota: ukuran 2x lebih besar, halo biru/putih,
+    terminator (sisi gelap) nyata, kawah terlihat, glow merah saat gerhana bulan
+  - Kota: gedung warna-warni (8 palet), jendela warm/cool, atap detail
+  - Mobil: 12 warna cerah, lampu depan menyala saat gelap
+  - Scene luar angkasa: TIDAK diubah (sudah bagus)
 """
 
-import math
-import random
-import sys
-import time
-
-import numpy as np
+import math, random, sys, time
 
 try:
     import pygame
@@ -35,1192 +25,1560 @@ try:
     from OpenGL.GL import *
     from OpenGL.GLU import *
 except ImportError:
-    print("=" * 55)
-    print("  Library belum terinstall. Jalankan perintah ini:")
-    print("  pip install PyOpenGL PyOpenGL_accelerate pygame numpy")
-    print("=" * 55)
+    print("pip install PyOpenGL PyOpenGL_accelerate pygame numpy")
     sys.exit(1)
 
-# ─────────────────────────── KONSTANTA ───────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  KONSTANTA
+# ══════════════════════════════════════════════════════════════════
 
 WIDTH, HEIGHT = 1280, 720
-FPS = 60
-TITLE = "Simulasi Gerhana 3D - OpenGL Python"
+FPS   = 60
+TITLE = "Simulasi Gerhana 3D v5"
 
-# Warna langit multi-fase
-SKY_DAY         = (0.53, 0.81, 0.92)
-SKY_DUSK_EARLY  = (0.85, 0.60, 0.35)   # fajar/senja awal gerhana
-SKY_DUSK_MID    = (0.45, 0.18, 0.22)   # gerhana mendalam
-SKY_NIGHT       = (0.01, 0.01, 0.06)
-FOG_DAY         = (0.53, 0.81, 0.92)
-FOG_DUSK        = (0.40, 0.20, 0.15)
-FOG_NIGHT       = (0.0,  0.0,  0.03)
+SKY_DAY        = (0.38, 0.68, 0.92)
+SKY_DUSK_EARLY = (0.80, 0.45, 0.20)
+SKY_DUSK_MID   = (0.35, 0.10, 0.18)
+SKY_NIGHT      = (0.01, 0.01, 0.05)
+FOG_DAY        = (0.50, 0.75, 0.92)
+FOG_DUSK       = (0.38, 0.18, 0.12)
+FOG_NIGHT      = (0.00, 0.00, 0.03)
 
-# Siklus gerhana otomatis
-ECLIPSE_CYCLE_DURATION  = 60.0   # detik per siklus (solar)
-LUNAR_CYCLE_DURATION    = 80.0   # detik per siklus (lunar)
-SOLAR_PHASE_OFFSET      = 0.0
-LUNAR_PHASE_OFFSET      = 40.0   # mulai lebih lama dari solar
+ECLIPSE_CYCLE  = 55.0
+LUNAR_CYCLE    = 75.0
 
-# ─────────────────────────── UTILITAS ────────────────────────────
+# Matahari di langit kota
+SUN_ORBIT_R_H  = 280.0    # radius busur horizontal
+SUN_ORBIT_R_V  = 130.0    # radius busur vertikal
+SUN_SPEED      = 0.022    # rad/s
+SUN_R          = 42.0     # radius disk matahari (↑ dari 28 → jauh lebih besar)
+MOON_R_CITY    = 22.0     # radius disk bulan di kota (↑ dari 13 → jauh lebih besar)
 
-def lerp(a, b, t):
-    return a + (b - a) * t
+# Scene luar angkasa (tidak berubah)
+EARTH_ORBIT_R   = 500.0
+EARTH_ORBIT_SPD = 0.012
+MOON_ORBIT_R    = 110.0
+MOON_ORBIT_SPD  = 0.09
 
-def lerp_color(c1, c2, t):
-    return tuple(lerp(a, b, t) for a, b in zip(c1, c2))
+# ══════════════════════════════════════════════════════════════════
+#  UTILITAS
+# ══════════════════════════════════════════════════════════════════
 
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
-def normalize(v):
-    n = math.sqrt(sum(x * x for x in v))
-    return tuple(x / n for x in v) if n > 0 else v
+def lerp(a, b, t):      return a + (b - a) * t
+def lerp3(c1, c2, t):   return tuple(lerp(a, b, t) for a, b in zip(c1, c2))
+def clamp(v, lo, hi):   return max(lo, min(hi, v))
 
 def smoothstep(t):
-    """Easing: halus masuk dan keluar (cubic)."""
-    t = clamp(t, 0.0, 1.0)
-    return t * t * (3 - 2 * t)
+    t = clamp(t, 0, 1);  return t * t * (3 - 2*t)
 
 def smootherstep(t):
-    """Easing: lebih halus lagi (quintic)."""
-    t = clamp(t, 0.0, 1.0)
-    return t * t * t * (t * (t * 6 - 15) + 10)
+    t = clamp(t, 0, 1);  return t*t*t*(t*(t*6 - 15) + 10)
 
-def ease_in_out_sine(t):
-    """Easing berbasis sinus, cocok untuk efek cahaya."""
-    return -(math.cos(math.pi * t) - 1) / 2
+def ease_sine(t):
+    return -(math.cos(math.pi * clamp(t, 0, 1)) - 1) / 2
 
-def ease_out_expo(t):
-    """Easing cepat masuk, lambat keluar."""
-    if t >= 1.0: return 1.0
-    return 1.0 - math.pow(2, -10 * t)
+# ══════════════════════════════════════════════════════════════════
+#  OPENGL PRIMITIF
+# ══════════════════════════════════════════════════════════════════
 
-def bell_curve(t, center=0.5, width=0.35):
-    """Kurva lonceng: naik ke puncak di `center`, lalu turun."""
-    x = (t - center) / width
-    return math.exp(-0.5 * x * x)
+def set_mat(r, g, b, a=1.0, spec=0.3, shin=40, emit=(0,0,0)):
+    glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [r, g, b, a])
+    glMaterialfv(GL_FRONT, GL_SPECULAR,            [spec]*3 + [1.0])
+    glMaterialf (GL_FRONT, GL_SHININESS,           shin)
+    glMaterialfv(GL_FRONT, GL_EMISSION,            list(emit) + [1.0])
 
-# ─────────────────────────── OPENGL HELPERS ──────────────────────
-
-def gl_color3(r, g, b):
-    glColor3f(r, g, b)
-
-def gl_color4(r, g, b, a):
-    glColor4f(r, g, b, a)
-
-def draw_box(cx, cy, cz, sx, sy, sz, color, shininess=30):
+def draw_box(cx, cy, cz, sx, sy, sz, color, shininess=35, spec=0.3, emit=(0,0,0)):
     r, g, b = color
-    hx, hy, hz = sx / 2, sy / 2, sz / 2
+    set_mat(r, g, b, spec=spec, shin=shininess, emit=emit)
+    hx, hy, hz = sx/2, sy/2, sz/2
+    glPushMatrix(); glTranslatef(cx, cy, cz); glBegin(GL_QUADS)
+    for nx, ny, nz, verts in [
+        ( 0, 1, 0, [(-hx, hy,-hz),( hx, hy,-hz),( hx, hy, hz),(-hx, hy, hz)]),
+        ( 0,-1, 0, [(-hx,-hy, hz),( hx,-hy, hz),( hx,-hy,-hz),(-hx,-hy,-hz)]),
+        ( 0, 0, 1, [(-hx,-hy, hz),( hx,-hy, hz),( hx, hy, hz),(-hx, hy, hz)]),
+        ( 0, 0,-1, [(-hx, hy,-hz),( hx, hy,-hz),( hx,-hy,-hz),(-hx,-hy,-hz)]),
+        (-1, 0, 0, [(-hx,-hy,-hz),(-hx,-hy, hz),(-hx, hy, hz),(-hx, hy,-hz)]),
+        ( 1, 0, 0, [( hx,-hy, hz),( hx,-hy,-hz),( hx, hy,-hz),( hx, hy, hz)]),
+    ]:
+        glNormal3f(nx, ny, nz)
+        for v in verts: glVertex3f(*v)
+    glEnd(); glPopMatrix()
 
-    glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [r, g, b, 1.0])
-    glMaterialfv(GL_FRONT, GL_SPECULAR,            [0.3, 0.3, 0.3, 1.0])
-    glMaterialf(GL_FRONT, GL_SHININESS, shininess)
-
-    glPushMatrix()
-    glTranslatef(cx, cy, cz)
-    glBegin(GL_QUADS)
-
-    glNormal3f(0, 1, 0)
-    glVertex3f(-hx, hy, -hz); glVertex3f(hx, hy, -hz)
-    glVertex3f(hx, hy,  hz); glVertex3f(-hx, hy,  hz)
-
-    glNormal3f(0, -1, 0)
-    glVertex3f(-hx, -hy,  hz); glVertex3f(hx, -hy,  hz)
-    glVertex3f(hx, -hy, -hz); glVertex3f(-hx, -hy, -hz)
-
-    glNormal3f(0, 0, 1)
-    glVertex3f(-hx, -hy, hz); glVertex3f(hx, -hy, hz)
-    glVertex3f(hx,  hy, hz); glVertex3f(-hx,  hy, hz)
-
-    glNormal3f(0, 0, -1)
-    glVertex3f(-hx,  hy, -hz); glVertex3f(hx,  hy, -hz)
-    glVertex3f(hx, -hy, -hz); glVertex3f(-hx, -hy, -hz)
-
-    glNormal3f(-1, 0, 0)
-    glVertex3f(-hx, -hy, -hz); glVertex3f(-hx, -hy, hz)
-    glVertex3f(-hx,  hy,  hz); glVertex3f(-hx,  hy, -hz)
-
-    glNormal3f(1, 0, 0)
-    glVertex3f(hx, -hy,  hz); glVertex3f(hx, -hy, -hz)
-    glVertex3f(hx,  hy, -hz); glVertex3f(hx,  hy,  hz)
-
-    glEnd()
+def draw_sphere(cx, cy, cz, radius, sl=24, st=12, color=(1,1,1),
+                emit=(0,0,0), shin=50, spec=0.6):
+    glPushMatrix(); glTranslatef(cx, cy, cz)
+    r, g, b = color
+    set_mat(r, g, b, spec=spec, shin=shin, emit=emit)
+    q = gluNewQuadric(); gluQuadricNormals(q, GLU_SMOOTH)
+    gluSphere(q, radius, sl, st); gluDeleteQuadric(q)
+    glMaterialfv(GL_FRONT, GL_EMISSION, [0,0,0,1])
     glPopMatrix()
 
-def draw_sphere(cx, cy, cz, radius, slices=24, stacks=12, color=(1,1,1),
-                emissive=(0,0,0), shininess=50):
-    glPushMatrix()
-    glTranslatef(cx, cy, cz)
-    r, g, b = color
-    glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [r, g, b, 1.0])
-    glMaterialfv(GL_FRONT, GL_EMISSION,            list(emissive) + [1.0])
-    glMaterialfv(GL_FRONT, GL_SPECULAR,            [0.6, 0.6, 0.6, 1.0])
-    glMaterialf(GL_FRONT, GL_SHININESS, shininess)
-    quad = gluNewQuadric()
-    gluSphere(quad, radius, slices, stacks)
-    gluDeleteQuadric(quad)
-    glMaterialfv(GL_FRONT, GL_EMISSION, [0, 0, 0, 1])
-    glPopMatrix()
-
-def draw_cylinder(cx, cy, cz, base_r, top_r, height, slices=12,
-                  color=(0.5, 0.5, 0.5)):
-    glPushMatrix()
-    glTranslatef(cx, cy, cz)
-    r, g, b = color
-    glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [r, g, b, 1.0])
-    glMaterialfv(GL_FRONT, GL_SPECULAR,            [0.1, 0.1, 0.1, 1.0])
-    glMaterialf(GL_FRONT, GL_SHININESS, 10)
-    quad = gluNewQuadric()
-    gluCylinder(quad, base_r, top_r, height, slices, 1)
-    gluDeleteQuadric(quad)
-    glPopMatrix()
-
-def draw_sphere_raw(cx, cy, cz, r, slices=20, stacks=10, color=None):
-    if color:
-        glColor4f(*color)
-    glPushMatrix()
-    glTranslatef(cx, cy, cz)
+def draw_cylinder(cx, cy, cz, br, tr, h, sl=12, color=(0.5,0.5,0.5)):
+    glPushMatrix(); glTranslatef(cx, cy, cz)
+    r, g, b = color; set_mat(r, g, b, spec=0.1, shin=10)
     q = gluNewQuadric()
-    gluSphere(q, r, slices, stacks)
-    gluDeleteQuadric(q)
+    gluCylinder(q, br, tr, h, sl, 1)
+    gluDisk(q, 0, br, sl, 1)
+    glTranslatef(0, 0, h); gluDisk(q, 0, tr, sl, 1)
+    gluDeleteQuadric(q); glPopMatrix()
+
+def raw_sphere(cx, cy, cz, r, sl=16, st=10):
+    """Sphere tanpa material — pakai glColor sebelumnya."""
+    glPushMatrix(); glTranslatef(cx, cy, cz)
+    q = gluNewQuadric(); gluSphere(q, r, sl, st); gluDeleteQuadric(q)
     glPopMatrix()
 
-# ─────────────────────────── KELAS MOBIL ─────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  MATAHARI DI LANGIT KOTA  (versi jauh lebih detail & jelas)
+# ══════════════════════════════════════════════════════════════════
+
+def draw_city_sun(sx, sy, sz, solar_t, dark_t, sim_time):
+    """
+    Gambar matahari di langit kota dengan:
+    - Disk kuning/putih besar (radius SUN_R = 42)
+    - Halo cahaya berlapis (5 lapisan additive blend)
+    - 12 sinar berputar perlahan
+    - Cincin korona saat gerhana (solar_t > 0.4)
+    - Prominensi plasma merah saat solar_t > 0.65
+    - Semua ukuran skala proporsional agar jelas dari jauh
+    """
+    glDisable(GL_LIGHTING)
+
+    base_bright = max(0.0, 1.0 - dark_t * 0.90)
+
+    # Warna matahari berubah sepanjang gerhana:
+    # normal → kuning terang; puncak gerhana → oranye kemerahan
+    sr = lerp(1.00, 0.90, solar_t)
+    sg = lerp(0.98, 0.42, solar_t)
+    sb = lerp(0.72, 0.06, solar_t)
+
+    # ── Halo berlapis (additive) ─────────────────────────────────
+    # Layer paling luar ke dalam — makin dalam makin terang
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE)   # ADDITIVE: terang menambah terang
+
+    halo_layers = [
+        (SUN_R * 8.0,  0.012),   # halo jauh, sangat tipis
+        (SUN_R * 6.0,  0.022),
+        (SUN_R * 4.5,  0.040),
+        (SUN_R * 3.2,  0.072),
+        (SUN_R * 2.3,  0.115),
+        (SUN_R * 1.75, 0.175),
+        (SUN_R * 1.35, 0.240),   # halo dekat disk, paling terang
+    ]
+    for rr, aa in halo_layers:
+        # Warna halo sedikit lebih kuning/oranye di luar
+        fade_g = sg * lerp(0.55, 0.90, rr / (SUN_R * 8.0))
+        fade_b = sb * lerp(0.20, 0.60, rr / (SUN_R * 8.0))
+        glColor4f(sr, fade_g, fade_b, aa * base_bright)
+        raw_sphere(sx, sy, sz, rr, 14, 8)
+
+    # ── Sinar berputar (12 sinar) ────────────────────────────────
+    if dark_t < 0.85 and base_bright > 0.04:
+        ray_alpha = base_bright * (1.0 - solar_t * 0.80) * 0.55
+        ray_len   = SUN_R * lerp(5.5, 1.5, solar_t)
+        ray_w     = SUN_R * 0.18
+        rot       = sim_time * 3.2    # rotasi lambat
+
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+        for i in range(12):
+            ang = math.radians(i * 30 + rot)
+            # Titik pangkal sinar (di tepi disk)
+            ox = math.cos(ang) * SUN_R * 1.08
+            oy = math.sin(ang) * SUN_R * 1.08
+            # Titik ujung sinar
+            ex2 = sx + math.cos(ang) * (SUN_R * 1.08 + ray_len)
+            ey2 = sy + math.sin(ang) * (SUN_R * 1.08 + ray_len)
+            # Lebar pangkal sinar
+            pw = math.cos(ang + math.pi/2) * ray_w * 0.5
+            ph = math.sin(ang + math.pi/2) * ray_w * 0.5
+
+            glBegin(GL_TRIANGLES)
+            glColor4f(sr, sg, sb * 0.55, ray_alpha)
+            glVertex3f(sx + ox - pw, sy + oy - ph, sz)
+            glVertex3f(sx + ox + pw, sy + oy + ph, sz)
+            glColor4f(sr, sg * 0.38, 0.0, 0.0)   # ujung transparan
+            glVertex3f(ex2, ey2, sz)
+            glEnd()
+
+        # Sinar antara (lebih pendek, untuk efek bintang)
+        for i in range(12):
+            ang = math.radians(i * 30 + 15 + rot * 0.7)
+            ray_len2 = ray_len * 0.45
+            ex2 = sx + math.cos(ang) * (SUN_R * 1.08 + ray_len2)
+            ey2 = sy + math.sin(ang) * (SUN_R * 1.08 + ray_len2)
+            pw = math.cos(ang + math.pi/2) * ray_w * 0.28
+            ph = math.sin(ang + math.pi/2) * ray_w * 0.28
+            ox = math.cos(ang) * SUN_R * 1.08
+            oy = math.sin(ang) * SUN_R * 1.08
+            glBegin(GL_TRIANGLES)
+            glColor4f(sr, sg, sb * 0.4, ray_alpha * 0.55)
+            glVertex3f(sx + ox - pw, sy + oy - ph, sz)
+            glVertex3f(sx + ox + pw, sy + oy + ph, sz)
+            glColor4f(1.0, 0.6, 0.1, 0.0)
+            glVertex3f(ex2, ey2, sz)
+            glEnd()
+
+    glDisable(GL_BLEND)
+
+    # ── Disk matahari solid (dengan lighting) ────────────────────
+    glEnable(GL_LIGHTING)
+    em_strength = lerp(5.5, 0.12, solar_t) * base_bright
+    draw_sphere(sx, sy, sz, SUN_R, 28, 16,
+                color=(sr, sg, sb),
+                emit=(sr * em_strength, sg * em_strength * 0.88, sb * em_strength * 0.32),
+                shin=5, spec=0.0)
+    glDisable(GL_LIGHTING)
+
+    # ── Cincin korona saat mendekati/puncak gerhana ──────────────
+    if solar_t > 0.40:
+        ct = smoothstep((solar_t - 0.40) / 0.60)
+
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+
+        # Cincin berlapis: dari dalam ke luar
+        corona_rings = [
+            (SUN_R * 1.62, 0.32 * ct, sg * 0.68, sb * 0.15),
+            (SUN_R * 1.92, 0.24 * ct, sg * 0.50, sb * 0.08),
+            (SUN_R * 2.35, 0.16 * ct, sg * 0.35, 0.04),
+            (SUN_R * 3.0,  0.09 * ct, sg * 0.22, 0.00),
+            (SUN_R * 4.0,  0.045*ct, sg * 0.15, 0.00),
+        ]
+        for rr, aa, cg, cb in corona_rings:
+            glColor4f(sr, cg, cb, aa)
+            raw_sphere(sx, sy, sz, rr, 20, 12)
+
+        # Kilat / flare korona melingkar (berputar berbeda dari sinar)
+        if solar_t > 0.60:
+            ft = smoothstep((solar_t - 0.60) / 0.40)
+            rot2 = sim_time * 0.22
+            for i in range(16):
+                ang = math.radians(i * 22.5 + rot2 * 57.3)
+                r_off = SUN_R * lerp(1.65, 1.72, 0.5 + 0.5*math.sin(sim_time*1.7+i))
+                flare_r = SUN_R * lerp(0.08, 0.15, ft)
+                glColor4f(1.0, sg * 0.60, 0.02, 0.22 * ft)
+                raw_sphere(sx + math.cos(ang)*r_off,
+                           sy + math.sin(ang)*r_off,
+                           sz, flare_r, 8, 5)
+
+        # Prominensi plasma merah (nyala api di tepi matahari)
+        if solar_t > 0.65:
+            pt = smoothstep((solar_t - 0.65) / 0.35)
+            for i in range(10):
+                ang  = i * (math.pi / 5) + sim_time * 0.14
+                # Panjang prominensi bervariasi sinusoidal
+                plen = SUN_R * (lerp(0.55, 1.10, pt) + 0.28 * math.sin(sim_time * 2.0 + i))
+                # Lebar pangkal
+                half_w = SUN_R * 0.13
+
+                px_base = sx + math.cos(ang) * SUN_R * 1.05
+                py_base = sy + math.sin(ang) * SUN_R * 1.05
+                px_tip  = sx + math.cos(ang) * (SUN_R * 1.05 + plen)
+                py_tip  = sy + math.sin(ang) * (SUN_R * 1.05 + plen)
+
+                # Tegak lurus arah prominensi
+                perp_x  = math.cos(ang + math.pi/2) * half_w
+                perp_y  = math.sin(ang + math.pi/2) * half_w
+
+                glBegin(GL_TRIANGLES)
+                glColor4f(1.00, 0.28, 0.04, 0.72 * pt)
+                glVertex3f(px_base - perp_x, py_base - perp_y, sz)
+                glVertex3f(px_base + perp_x, py_base + perp_y, sz)
+                glColor4f(1.00, 0.62, 0.12, 0.0)   # ujung memudar
+                glVertex3f(px_tip, py_tip, sz)
+                glEnd()
+
+                # Percabangan kecil di ujung prominensi
+                if pt > 0.5:
+                    for branch_dir in (-1, 1):
+                        ba = ang + branch_dir * 0.4
+                        bl = plen * 0.35
+                        bx = px_tip + math.cos(ba) * bl
+                        by = py_tip + math.sin(ba) * bl
+                        bw2 = half_w * 0.4
+                        bpx = math.cos(ba + math.pi/2) * bw2
+                        bpy = math.sin(ba + math.pi/2) * bw2
+                        glBegin(GL_TRIANGLES)
+                        glColor4f(1.0, 0.35, 0.06, 0.40 * pt)
+                        glVertex3f(px_tip - bpx, py_tip - bpy, sz)
+                        glVertex3f(px_tip + bpx, py_tip + bpy, sz)
+                        glColor4f(1.0, 0.65, 0.15, 0.0)
+                        glVertex3f(bx, by, sz)
+                        glEnd()
+
+        glDisable(GL_BLEND)
+
+    # ── Efek diamond ring (cincin berlian) sesaat sebelum total ──
+    if 0.85 < solar_t < 0.99:
+        dr_t = smoothstep((solar_t - 0.85) / 0.14)
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+        # Titik terang tunggal di tepi (efek berlian)
+        glColor4f(1.0, 0.98, 0.92, 0.90 * dr_t)
+        raw_sphere(sx + SUN_R * 0.98, sy + SUN_R * 0.10, sz,
+                   SUN_R * 0.18, 12, 8)
+        glColor4f(1.0, 0.95, 0.85, 0.50 * dr_t)
+        raw_sphere(sx + SUN_R * 0.98, sy + SUN_R * 0.10, sz,
+                   SUN_R * 0.45, 10, 6)
+        glDisable(GL_BLEND)
+
+    glEnable(GL_LIGHTING)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  BULAN DI LANGIT KOTA  (versi jauh lebih detail & jelas)
+# ══════════════════════════════════════════════════════════════════
+
+def draw_city_moon(mx, my, mz, lunar_t, dark_t, solar_t, sim_time):
+    """
+    Gambar bulan di kota dengan:
+    - Disk abu-abu besar (radius MOON_R_CITY = 22)
+    - Halo biru-putih berlapis
+    - Terminator (batas terang/gelap) realistis
+    - Kawah-kawah permukaan
+    - Merah menyala saat gerhana bulan (lunar_t tinggi)
+    - Saat gerhana matahari: bulan hitam menutupi matahari (siluet gelap)
+    """
+    # Visibilitas bulan: makin gelap makin jelas
+    vis = smoothstep(clamp((dark_t - 0.03) / 0.20, 0, 1))
+    if vis < 0.02:
+        return
+
+    glDisable(GL_LIGHTING)
+
+    # ── Warna disk bulan ────────────────────────────────────────
+    # Normal: abu terang; gerhana bulan: merah tembaga
+    mc = lerp3((0.92, 0.90, 0.84), (0.70, 0.16, 0.06), lunar_t)
+
+    # Emisi bulan: cahaya sendiri sedikit (pantulan matahari)
+    ambient_moon = lerp(0.18, 0.0, dark_t) * vis
+    lunar_glow   = lerp(0.0, 0.72, lunar_t) * vis
+
+    # ── Halo bulan berlapis ─────────────────────────────────────
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+    # Warna halo: biru-putih normal, merah saat gerhana bulan
+    halo_col = lerp3((0.62, 0.72, 0.98), (0.80, 0.18, 0.06), lunar_t)
+
+    halo_layers = [
+        (MOON_R_CITY * 4.5, 0.025),
+        (MOON_R_CITY * 3.2, 0.048),
+        (MOON_R_CITY * 2.3, 0.080),
+        (MOON_R_CITY * 1.65, 0.125),
+        (MOON_R_CITY * 1.28, 0.180),
+    ]
+    for rr, aa in halo_layers:
+        glColor4f(halo_col[0], halo_col[1], halo_col[2], aa * vis)
+        raw_sphere(mx, my, mz, rr, 14, 8)
+
+    # Jika gerhana bulan: halo merah lebih tebal
+    if lunar_t > 0.15:
+        lt_glow = smoothstep(lunar_t)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+        for rr, aa in [
+            (MOON_R_CITY * 2.0, 0.18 * lt_glow),
+            (MOON_R_CITY * 1.5, 0.28 * lt_glow),
+            (MOON_R_CITY * 1.22,0.20 * lt_glow),
+        ]:
+            glColor4f(0.9, 0.12, 0.04, aa * vis)
+            raw_sphere(mx, my, mz, rr, 14, 8)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+    glDisable(GL_BLEND)
+    glEnable(GL_LIGHTING)
+
+    # ── Disk bulan solid ────────────────────────────────────────
+    # Emisi agar terlihat saat malam
+    em_r = mc[0] * (ambient_moon + lunar_glow * mc[0])
+    em_g = mc[1] * (ambient_moon + lunar_glow * mc[1])
+    em_b = mc[2] * (ambient_moon + lunar_glow * mc[2])
+
+    draw_sphere(mx, my, mz, MOON_R_CITY, 28, 16,
+                color=mc,
+                emit=(em_r, em_g, em_b),
+                shin=22, spec=0.10)
+
+    # ── Terminator (bayangan sisi gelap bulan) ──────────────────
+    # Offset sphere gelap sedikit ke arah sumber cahaya terbalik
+    # → memberi kesan bulan setengah / sabit secara visual
+    if lunar_t < 0.15:
+        # Offset terminator (ke kiri dari arah matahari)
+        term_offset = MOON_R_CITY * lerp(0.30, 0.0, lunar_t * 6.67)
+        glDisable(GL_LIGHTING)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        term_alpha = lerp(0.72, 0.0, lunar_t * 6.67) * vis
+        glColor4f(0.0, 0.0, 0.02, term_alpha)
+        # Sphere besar yang overlap → efek terminator
+        raw_sphere(mx - term_offset, my, mz, MOON_R_CITY * 1.05, 22, 12)
+        glDisable(GL_BLEND)
+        glEnable(GL_LIGHTING)
+
+    # ── Kawah-kawah bulan ───────────────────────────────────────
+    glDisable(GL_LIGHTING)
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+    crater_col = lerp3((0.55, 0.52, 0.48), (0.40, 0.09, 0.04), lunar_t)
+    # 5 kawah dengan posisi berbeda di permukaan bulan
+    craters = [
+        (0.42, 0.28, 0.20),    # (frac_x, frac_y, frac_r) dari MOON_R_CITY
+        (-0.28, 0.38, 0.15),
+        (0.18, -0.32, 0.18),
+        (-0.38, -0.20, 0.13),
+        (0.52, -0.14, 0.11),
+    ]
+    for fx, fy, fr in craters:
+        # Proyeksikan kawah ke permukaan bulan (sedikit di luar disk)
+        cx2 = mx + fx * MOON_R_CITY
+        cy2 = my + fy * MOON_R_CITY
+        cz2 = mz + MOON_R_CITY * math.sqrt(max(0, 1.0 - fx*fx - fy*fy)) * 0.85
+        cr  = fr * MOON_R_CITY
+        glColor4f(crater_col[0], crater_col[1], crater_col[2], 0.30 * vis)
+        raw_sphere(cx2, cy2, cz2, cr, 10, 6)
+        # Rim kawah (sedikit lebih terang)
+        glColor4f(min(crater_col[0]*1.3,1), min(crater_col[1]*1.2,1),
+                  min(crater_col[2]*1.2,1), 0.18 * vis)
+        raw_sphere(cx2, cy2, cz2, cr * 1.18, 8, 5)
+
+    glDisable(GL_BLEND)
+    glEnable(GL_LIGHTING)
+
+    # ── Siluet bulan saat menutupi matahari (gerhana matahari) ──
+    # Overlay disk hitam di atas disk matahari saat solar_t tinggi
+    # (ini dipanggil terpisah oleh EclipseSimulation)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  SILUET BULAN (overlay gelap menutupi matahari saat gerhana solar)
+# ══════════════════════════════════════════════════════════════════
+
+def draw_moon_silhouette_over_sun(sx, sy, sz, solar_t, sim_time):
+    """
+    Saat gerhana matahari, bulan bergerak menutupi disk matahari.
+    Gambar disk hitam bulan yang bergerak dari sisi ke tengah matahari.
+    """
+    if solar_t < 0.35:
+        return
+
+    ct = smoothstep((solar_t - 0.35) / 0.65)
+
+    glDisable(GL_LIGHTING)
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+    # Bulan bergerak dari kanan → menutupi tengah matahari
+    # Offset: mulai dari luar disk matahari, bergerak ke tengah
+    offset_start = SUN_R * 2.2
+    offset_end   = 0.0
+    moon_offset  = lerp(offset_start, offset_end, ct)
+
+    # Sedikit diatas/bawah matahari (tidak selalu tepat tengah)
+    vert_off = SUN_R * 0.08 * math.sin(sim_time * 0.03)
+
+    bx = sx + moon_offset
+    by = sy + vert_off
+    bz = sz
+
+    # Disk bulan hitam (siluet)
+    moon_sil_r = MOON_R_CITY * lerp(1.6, 2.2, ct)   # bulan tampak besar dekat
+    glColor4f(0.0, 0.0, 0.01, clamp(ct * 1.4, 0, 1))
+    raw_sphere(bx, by, bz, moon_sil_r, 24, 14)
+
+    # Tepi bulan sedikit reddish dari korona matahari
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+    glColor4f(0.20, 0.04, 0.00, 0.18 * ct)
+    raw_sphere(bx, by, bz, moon_sil_r * 1.08, 20, 12)
+
+    glDisable(GL_BLEND)
+    glEnable(GL_LIGHTING)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  GEDUNG  (berwarna-warni, 4 tipe arsitektur)
+# ══════════════════════════════════════════════════════════════════
+
+class Building:
+    # 8 palet warna: (dinding_utama, aksen_atas, aksen_pita)
+    PALETTE = [
+        ((0.78, 0.62, 0.42), (0.92, 0.82, 0.58), (0.98, 0.76, 0.28)),  # krem / emas
+        ((0.28, 0.42, 0.62), (0.42, 0.58, 0.80), (0.60, 0.88, 0.98)),  # biru baja
+        ((0.62, 0.28, 0.28), (0.78, 0.42, 0.38), (0.98, 0.58, 0.42)),  # bata merah
+        ((0.28, 0.50, 0.36), (0.40, 0.68, 0.50), (0.62, 0.96, 0.62)),  # hijau sage
+        ((0.52, 0.38, 0.65), (0.68, 0.52, 0.85), (0.90, 0.72, 1.00)),  # ungu lavender
+        ((0.22, 0.38, 0.50), (0.34, 0.52, 0.68), (0.52, 0.80, 0.98)),  # abu-biru teal
+        ((0.65, 0.48, 0.28), (0.82, 0.64, 0.38), (1.00, 0.82, 0.42)),  # oranye tua
+        ((0.38, 0.38, 0.42), (0.56, 0.56, 0.60), (0.80, 0.88, 0.96)),  # abu kaca
+    ]
+    TYPES = ['tower', 'slab', 'stepped', 'tapered']
+
+    def __init__(self, x, z, w, d, h):
+        self.x = x;  self.z = z
+        self.w = w;  self.d = d;  self.h = h
+        p = random.choice(self.PALETTE)
+        self.cl = p[0]   # warna dinding utama
+        self.ch = p[1]   # warna atas/aksen
+        self.ca = p[2]   # warna pita/highlight
+        self.btype = random.choice(self.TYPES)
+
+        # Jendela: (wx, wy, lit, flicker, flicker_phase)
+        self.windows = []
+        rows = max(2, int(h / 5.5))
+        cols = max(2, int(w / 3.8))
+        for row in range(rows):
+            for col in range(cols):
+                wx = -w/2 + (col + 0.5) * (w / cols) + random.uniform(-0.25, 0.25)
+                wy = 2.5 + row * (h - 4) / max(rows - 1, 1)
+                lit = random.random() > 0.32
+                flk = random.random() > 0.82     # jendela berkedip (TV / lampu hidup-mati)
+                fp  = random.random() * 6.28
+                self.windows.append((wx, wy, lit, flk, fp))
+
+        self.has_ant  = h > 58 and random.random() > 0.38
+        self.has_sign = h > 40 and random.random() > 0.55  # papan reklame
+
+    def draw(self, dark_t, sim_time=0.0):
+        h = self.h
+        # Warna meredup saat gelap (tapi tidak hitam pekat)
+        cl = lerp3(self.cl, tuple(x * 0.22 for x in self.cl), dark_t)
+        ch = lerp3(self.ch, tuple(x * 0.18 for x in self.ch), dark_t)
+        ca = lerp3(self.ca, tuple(x * 0.16 for x in self.ca), dark_t)
+
+        # Gambar badan gedung
+        if   self.btype == 'slab':    self._slab(cl, ch, ca, dark_t)
+        elif self.btype == 'stepped': self._stepped(cl, ch, ca)
+        elif self.btype == 'tapered': self._tapered(cl, ch, ca, dark_t)
+        else:                         self._tower(cl, ch, ca, dark_t)
+
+        # Pita aksen horizontal setiap 1/3 tinggi (warna cerah)
+        for frac in [0.33, 0.66, 1.0]:
+            draw_box(self.x, frac * h, self.z,
+                     self.w + 0.55, 0.65, self.d + 0.55,
+                     ca, 62, spec=0.55)
+
+        # Antena
+        if self.has_ant:
+            draw_cylinder(self.x, h, self.z, 0.18, 0.10, 14, 6,
+                          lerp3((0.58, 0.58, 0.62), (0.18, 0.18, 0.22), dark_t))
+            ant_em = lerp3((0,0,0), (1.0, 0.10, 0.10), clamp(dark_t * 2, 0, 1))
+            draw_sphere(self.x, h + 14.5, self.z, 0.45, 8, 6,
+                        (0.90, 0.10, 0.10), ant_em, 20)
+
+        # Papan reklame (selalu menyala terang)
+        if self.has_sign and dark_t > 0.08:
+            sign_em = lerp3((0,0,0), self.ca, clamp(dark_t * 2.5, 0, 1))
+            sign_h  = h * 0.72
+            draw_box(self.x + self.w * 0.5 + 0.8, sign_h, self.z,
+                     0.15, 5.5, self.d * 0.55,
+                     self.ca, 15, spec=0.1, emit=sign_em)
+
+        # Jendela menyala
+        if dark_t > 0.08:
+            d2 = self.d
+            for wx, wy, lit, flk, fp in self.windows:
+                if not lit:
+                    continue
+                # Kedipan (TV atau neon)
+                if flk:
+                    fl = 0.85 + 0.15 * math.sin(sim_time * 5.8 + fp)
+                else:
+                    fl = 1.0
+
+                intensity = smoothstep(dark_t) * lerp(0.65, 1.0, random.random()) * fl
+
+                # Pilih tone warna jendela berdasarkan palet gedung
+                if sum(self.ca) > 2.1:
+                    wc = lerp3((0, 0, 0), (1.00, 0.96, 0.68), intensity)  # warm
+                else:
+                    wc = lerp3((0, 0, 0), (0.72, 0.90, 1.00), intensity)  # cool
+
+                em2 = wc if intensity > 0.42 else (0, 0, 0)
+
+                # Kedua sisi gedung (depan & belakang)
+                for dz_off, nz in [(d2/2 + 0.08,  1), (-d2/2 - 0.08, -1)]:
+                    draw_box(self.x + wx, wy, self.z + dz_off,
+                             1.05, 1.25, 0.13,
+                             wc, 4, spec=0.0, emit=em2)
+
+    # ─── Tipe-tipe gedung ───────────────────────────────────────
+
+    def _tower(self, cl, ch, ca, dt):
+        h = self.h
+        draw_box(self.x, h/2, self.z, self.w, h, self.d, cl, 40)
+        gc = lerp3((0.42, 0.58, 0.82), (0.04, 0.04, 0.14), dt)
+        draw_box(self.x, h/2, self.z,
+                 self.w + 0.18, h + 0.12, self.d + 0.18,
+                 gc, 96, spec=0.72)
+
+    def _slab(self, cl, ch, ca, dt):
+        h = self.h
+        draw_box(self.x, h * 0.425, self.z, self.w * 1.65, h * 0.85, self.d * 0.60, cl, 35)
+        draw_box(self.x, h * 0.925,  self.z, self.w * 0.90, h * 0.15, self.d * 0.60, ch, 50)
+        gc = lerp3((0.48, 0.64, 0.84), (0.04, 0.04, 0.12), dt)
+        draw_box(self.x, h * 0.425, self.z,
+                 self.w * 1.65 + 0.22, h * 0.85, self.d * 0.60 + 0.22,
+                 gc, 92, spec=0.68)
+
+    def _stepped(self, cl, ch, ca):
+        h = self.h
+        draw_box(self.x, h * 0.30,  self.z, self.w,        h * 0.60, self.d,        cl, 35)
+        draw_box(self.x, h * 0.70,  self.z, self.w * 0.70, h * 0.40, self.d * 0.70, ch, 46)
+        draw_box(self.x, h * 0.92,  self.z, self.w * 0.40, h * 0.16, self.d * 0.40, ca, 56)
+
+    def _tapered(self, cl, ch, ca, dt):
+        h = self.h
+        draw_box(self.x, h * 0.25, self.z, self.w,        h * 0.50, self.d,        cl, 35)
+        draw_box(self.x, h * 0.65, self.z, self.w * 0.75, h * 0.30, self.d * 0.75, ch, 46)
+        draw_box(self.x, h * 0.87, self.z, self.w * 0.45, h * 0.24, self.d * 0.45, ca, 56)
+        draw_cylinder(self.x, h, self.z, self.w * 0.14, 0.0, h * 0.14, 8,
+                      lerp3(ca, (0.18, 0.18, 0.18), dt))
+
+
+# ══════════════════════════════════════════════════════════════════
+#  KENDARAAN  (warna cerah + lampu detail)
+# ══════════════════════════════════════════════════════════════════
 
 class Car:
+    # 12 warna cerah & bervariasi
     COLORS = [
-        (0.8, 0.1, 0.1), (0.1, 0.3, 0.8), (0.1, 0.7, 0.2),
-        (0.9, 0.7, 0.1), (0.8, 0.8, 0.8), (0.15,0.15,0.15),
-        (0.7, 0.3, 0.8), (0.9, 0.5, 0.1),
+        (0.92, 0.12, 0.12),   # merah
+        (0.12, 0.32, 0.92),   # biru kobalt
+        (0.10, 0.78, 0.22),   # hijau
+        (0.98, 0.78, 0.08),   # kuning
+        (0.96, 0.96, 0.96),   # putih
+        (0.10, 0.10, 0.10),   # hitam
+        (0.78, 0.28, 0.92),   # ungu
+        (0.98, 0.52, 0.08),   # oranye
+        (0.08, 0.78, 0.82),   # cyan
+        (0.98, 0.32, 0.58),   # merah muda
+        (0.42, 0.72, 0.22),   # hijau army
+        (0.88, 0.72, 0.42),   # krem/tan
     ]
 
-    def __init__(self, x, z, direction, lane_z):
-        self.x = x
-        self.z = z
+    # Warna bodi sekunder (atap/side trim) untuk tiap warna utama
+    ROOF_COLORS = [
+        (0.70, 0.06, 0.06), (0.06, 0.20, 0.72), (0.06, 0.58, 0.14),
+        (0.80, 0.60, 0.04), (0.72, 0.72, 0.72), (0.22, 0.22, 0.22),
+        (0.58, 0.14, 0.72), (0.78, 0.34, 0.04), (0.04, 0.60, 0.64),
+        (0.78, 0.18, 0.42), (0.28, 0.56, 0.12), (0.68, 0.54, 0.28),
+    ]
+
+    def __init__(self, x, z, direction):
+        self.x = x;  self.z = z
         self.direction = direction
-        self.lane_z = lane_z
-        self.speed = random.uniform(0.25, 0.5)
-        self.color = random.choice(self.COLORS)
+        self.speed   = random.uniform(0.20, 0.50)
+        self._cidx   = random.randint(0, len(self.COLORS) - 1)
+        self.color   = self.COLORS[self._cidx]
+        self.roof_c  = self.ROOF_COLORS[self._cidx]
         self.stopped = False
-        self.width  = 1.8
-        self.height = 1.2
-        self.length = 3.8
-        self._angle = {'px': 0, 'nx': 180, 'pz': 90, 'nz': -90}[direction]
+        self.w = 1.8;  self.h = 1.25;  self.l = 4.0
+        self._angle  = {'px': 0, 'nx': 180, 'pz': 90, 'nz': -90}[direction]
+        self._wr     = 0.0   # rotasi roda
 
-    def update(self, dt, traffic_lights):
-        self.stopped = self._check_stop(traffic_lights)
+    def update(self, dt, tls):
+        self.stopped = self._chk(tls)
         if not self.stopped:
-            speed = self.speed * 20
-            if self.direction == 'px':
-                self.x += speed * dt
-                if self.x > 220: self.x = -220
+            spd = self.speed * 20 * dt
+            self._wr = (self._wr + spd * 28) % 360
+            if   self.direction == 'px':
+                self.x += spd;  self.x = self.x if self.x < 220 else -220
             elif self.direction == 'nx':
-                self.x -= speed * dt
-                if self.x < -220: self.x = 220
+                self.x -= spd;  self.x = self.x if self.x > -220 else 220
             elif self.direction == 'pz':
-                self.z += speed * dt
-                if self.z > 220: self.z = -220
+                self.z += spd;  self.z = self.z if self.z < 220 else -220
             elif self.direction == 'nz':
-                self.z -= speed * dt
-                if self.z < -220: self.z = 220
+                self.z -= spd;  self.z = self.z if self.z > -220 else 220
 
-    def _check_stop(self, traffic_lights):
-        stop_dist = 12
-        intersections = [0, 100, -100]
-        for ix in intersections:
-            for iz in intersections:
+    def _chk(self, tls):
+        for ix in [0, 100, -100]:
+            for iz in [0, 100, -100]:
                 if self.direction in ('px', 'nx'):
                     dx = ix - self.x
-                    if 2 < abs(dx) < stop_dist and abs(self.z - iz) < 10:
+                    if 2 < abs(dx) < 12 and abs(self.z - iz) < 10:
                         if (self.direction == 'px' and dx > 0) or \
                            (self.direction == 'nx' and dx < 0):
-                            tl = self._find_tl(traffic_lights, ix, iz)
+                            tl = next((t for t in tls
+                                       if math.sqrt((t.x-ix)**2+(t.z-iz)**2) < 20), None)
                             if tl and tl.state != 'green':
                                 return True
                 else:
                     dz = iz - self.z
-                    if 2 < abs(dz) < stop_dist and abs(self.x - ix) < 10:
+                    if 2 < abs(dz) < 12 and abs(self.x - ix) < 10:
                         if (self.direction == 'pz' and dz > 0) or \
                            (self.direction == 'nz' and dz < 0):
-                            tl = self._find_tl(traffic_lights, ix, iz)
+                            tl = next((t for t in tls
+                                       if math.sqrt((t.x-ix)**2+(t.z-iz)**2) < 20), None)
                             if tl and tl.state != 'green':
                                 return True
         return False
-
-    def _find_tl(self, traffic_lights, ix, iz):
-        best = None; bd = 9999
-        for tl in traffic_lights:
-            d = math.sqrt((tl.x - ix)**2 + (tl.z - iz)**2)
-            if d < 20 and d < bd:
-                best = tl; bd = d
-        return best
 
     def draw(self, dark_t):
         glPushMatrix()
         glTranslatef(self.x, 0, self.z)
         glRotatef(self._angle, 0, 1, 0)
-        c = self.color
-        draw_box(0, 0.6, 0, self.length, self.height, self.width, c, 60)
-        draw_box(0, 1.4, 0, self.length * 0.65, 0.7, self.width * 0.9,
-                 (0.1, 0.15, 0.2), 80)
-        for sz in [-0.6, 0.6]:
-            draw_box(self.length/2 + 0.05, 0.65, sz, 0.1, 0.35, 0.4,
-                     (1.0, 1.0, 0.9), 10)
-        br = (1.0, 0.1, 0.05) if self.stopped else (0.6, 0.0, 0.0)
-        for sz in [-0.6, 0.6]:
-            draw_box(-self.length/2 - 0.05, 0.65, sz, 0.1, 0.3, 0.35, br, 10)
-        for wx, wz in [(1.2, 1.0), (1.2, -1.0), (-1.2, 1.0), (-1.2, -1.0)]:
-            draw_cylinder(wx, 0.3, wz, 0.28, 0.28, 0.18, color=(0.1, 0.1, 0.1))
+
+        c  = self.color
+        rc = self.roof_c
+
+        # ── Bodi bawah ──────────────────────────────────────────
+        draw_box(0, 0.625, 0, self.l, self.h, self.w, c, 62)
+
+        # ── Bodi atas / kabin kaca ───────────────────────────────
+        draw_box(0, 1.42, 0, self.l * 0.60, 0.72, self.w * 0.88,
+                 (0.06, 0.10, 0.20), 92, spec=0.75)
+
+        # ── Side stripe (garis aksen horizontal) ─────────────────
+        draw_box(0, 0.90, 0, self.l + 0.02, 0.18, self.w + 0.02,
+                 rc, 40, spec=0.4)
+
+        # ── Bumper depan & belakang ──────────────────────────────
+        draw_box( self.l/2 + 0.06, 0.38, 0, 0.20, 0.52, self.w * 0.72,
+                 lerp3(c, (0.14, 0.14, 0.14), 0.55), 22)
+        draw_box(-self.l/2 - 0.06, 0.38, 0, 0.20, 0.52, self.w * 0.72,
+                 lerp3(c, (0.14, 0.14, 0.14), 0.55), 22)
+
+        # ── Lampu DEPAN (menyala terang saat gelap) ───────────────
+        hl_em = lerp3((0,0,0), (1.00, 0.98, 0.88), clamp(dark_t * 3.5, 0, 1))
+        for sz in (-0.62, 0.62):
+            draw_box(self.l/2 + 0.08, 0.68, sz, 0.11, 0.34, 0.40,
+                     (1.00, 0.98, 0.90), 8, spec=0.1, emit=hl_em)
+            # Halo lampu (additive glow)
+            if dark_t > 0.25:
+                glDisable(GL_LIGHTING)
+                glEnable(GL_BLEND)
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+                gl_a = dark_t * 0.22
+                glColor4f(1.0, 0.95, 0.70, gl_a)
+                raw_sphere(self.x + math.cos(math.radians(self._angle)) * (self.l/2 + 0.2),
+                           0.68,
+                           self.z + math.sin(math.radians(self._angle)) * (self.l/2 + 0.2) + sz*0.0,
+                           1.8, 8, 5)
+                glDisable(GL_BLEND)
+                glEnable(GL_LIGHTING)
+
+        # ── Lampu BELAKANG ────────────────────────────────────────
+        bc  = (1.00, 0.08, 0.05) if self.stopped else (0.52, 0.0, 0.0)
+        b_em = lerp3((0,0,0), bc, clamp(dark_t * 2.5, 0, 1))
+        for sz in (-0.62, 0.62):
+            draw_box(-self.l/2 - 0.08, 0.68, sz, 0.11, 0.30, 0.35,
+                     bc, 8, spec=0.0, emit=b_em)
+
+        # ── Roda dengan rotasi ────────────────────────────────────
+        for wx, wz in [(1.22, 0.96), (1.22, -0.96), (-1.22, 0.96), (-1.22, -0.96)]:
+            glPushMatrix()
+            glTranslatef(wx, 0.14, wz)
+            glRotatef(90, 0, 1, 0)
+            glRotatef(self._wr, 1, 0, 0)
+            draw_cylinder(0, 0, -0.09, 0.30, 0.30, 0.18, 12, (0.09, 0.09, 0.09))
+            # Pelek perak
+            draw_cylinder(0, 0, -0.04, 0.18, 0.18, 0.10, 8, (0.58, 0.58, 0.64))
+            glPopMatrix()
+
         glPopMatrix()
 
-# ─────────────────────────── LAMPU LALU LINTAS ───────────────────
+
+# ══════════════════════════════════════════════════════════════════
+#  LAMPU LALU LINTAS
+# ══════════════════════════════════════════════════════════════════
 
 class TrafficLight:
     PHASES = [('green', 4.0), ('yellow', 1.2), ('red', 3.5)]
 
-    def __init__(self, x, z, phase_offset=0.0):
-        self.x = x; self.z = z
-        self.state = 'green'
-        self._phase_idx = 0
-        self._timer = phase_offset % sum(d for _, d in self.PHASES)
+    def __init__(self, x, z, offset=0.0):
+        self.x = x;  self.z = z;  self.state = 'green'
+        self._pi = 0;  self._t = offset % 8.7
         acc = 0
         for i, (s, d) in enumerate(self.PHASES):
             acc += d
-            if self._timer < acc:
-                self._phase_idx = i
-                self._timer = self._timer - (acc - d)
-                self.state = s
-                break
+            if self._t < acc:
+                self._pi = i;  self._t -= (acc - d);  self.state = s;  break
 
     def update(self, dt):
-        self._timer += dt
-        dur = self.PHASES[self._phase_idx][1]
-        if self._timer >= dur:
-            self._timer -= dur
-            self._phase_idx = (self._phase_idx + 1) % len(self.PHASES)
-            self.state = self.PHASES[self._phase_idx][0]
+        self._t += dt
+        if self._t >= self.PHASES[self._pi][1]:
+            self._t -= self.PHASES[self._pi][1]
+            self._pi = (self._pi + 1) % 3
+            self.state = self.PHASES[self._pi][0]
 
     def draw(self):
-        draw_cylinder(self.x, 0, self.z, 0.18, 0.18, 10, color=(0.15,0.15,0.15))
-        draw_box(self.x, 11, self.z, 1.0, 3.2, 0.8, (0.08, 0.08, 0.08))
-        r_em = (1.0, 0.0, 0.0) if self.state == 'red'    else (0.0,0.0,0.0)
-        y_em = (1.0, 0.8, 0.0) if self.state == 'yellow' else (0.0,0.0,0.0)
-        g_em = (0.0, 1.0, 0.0) if self.state == 'green'  else (0.0,0.0,0.0)
-        draw_sphere(self.x, 12.4, self.z - 0.05, 0.32, 12, 8, (0.6,0.0,0.0), r_em, 20)
-        draw_sphere(self.x, 11.0, self.z - 0.05, 0.32, 12, 8, (0.5,0.4,0.0), y_em, 20)
-        draw_sphere(self.x,  9.6, self.z - 0.05, 0.32, 12, 8, (0.0,0.5,0.0), g_em, 20)
+        draw_cylinder(self.x, 0, self.z, 0.16, 0.16, 10, 8, (0.12, 0.12, 0.12))
+        draw_box(self.x, 11, self.z, 0.85, 3.0, 0.72, (0.06, 0.06, 0.06))
+        for y, bc, sn in [(12.3, (0.7, 0.0, 0.0), 'red'),
+                          (11.0, (0.6, 0.5, 0.0), 'yellow'),
+                          ( 9.7, (0.0, 0.6, 0.0), 'green')]:
+            em = bc if self.state == sn else (0, 0, 0)
+            draw_sphere(self.x, y, self.z - 0.04, 0.30, 10, 7, bc, em, 20)
 
-# ─────────────────────────── GEDUNG ──────────────────────────────
 
-class Building:
-    FACADE_COLORS = [
-        (0.27, 0.35, 0.43), (0.20, 0.28, 0.38), (0.35, 0.40, 0.48),
-        (0.18, 0.26, 0.34), (0.30, 0.38, 0.46), (0.25, 0.30, 0.38),
-    ]
-
-    def __init__(self, x, z, w, d, h):
-        self.x = x; self.z = z
-        self.w = w; self.d = d; self.h = h
-        self.color = random.choice(self.FACADE_COLORS)
-        self.lit_windows = [
-            (random.uniform(-w/2+1, w/2-1),
-             random.uniform(2, h-2),
-             random.uniform(-d/2+1, d/2-1),
-             random.random() > 0.4)
-            for _ in range(int(w * h / 18))
-        ]
-
-    def draw(self, dark_t):
-        draw_box(self.x, self.h/2, self.z, self.w, self.h, self.d, self.color, 40)
-        gc = lerp_color((0.4,0.55,0.7), (0.0,0.0,0.1), dark_t)
-        draw_box(self.x, self.h/2, self.z,
-                 self.w + 0.1, self.h + 0.1, self.d + 0.1, gc, 90)
-        if dark_t > 0.25:
-            for wx, wy, wz, lit in self.lit_windows:
-                if lit:
-                    intensity = smoothstep(dark_t) * random.uniform(0.8, 1.0)
-                    wc = lerp_color((0,0,0), (1.0, 0.95, 0.6), intensity)
-                    draw_box(self.x + wx, self.h/2 + wy - self.h/2,
-                             self.z + wz, 0.6, 0.9, 0.1, wc, 5)
-
-# ─────────────────────────── KOTA ────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  KOTA
+# ══════════════════════════════════════════════════════════════════
 
 class City:
     def __init__(self):
         self.buildings = []
-        self.traffic_lights = []
+        self.tls  = []
         self.cars = []
-        self.street_lamps = []
+        self.lamps = []
         self._build()
 
     def _build(self):
         random.seed(42)
+
+        # ── Gedung ──────────────────────────────────────────────
         zones = [
-            (-80, -80, 12, 40, 40, 1.2), ( 80, -80, 12, 40, 40, 1.0),
-            (-80,  80, 12, 40, 40, 1.1), ( 80,  80, 12, 40, 40, 1.3),
-            (-160, 0, 8, 30, 60, 0.9),   ( 160, 0, 8, 30, 60, 0.9),
-            (0, -160, 8, 60, 30, 0.85),  (0,  160, 8, 60, 30, 0.85),
+            (-75,-75,14,38,38,1.25), ( 75,-75,14,38,38,1.05),
+            (-75, 75,14,38,38,1.15), ( 75, 75,14,38,38,1.35),
+            (-155, 0, 9,28,55,0.90), (155,  0, 9,28,55,0.90),
+            (  0,-155, 9,55,28,0.82),(  0,155, 9,55,28,0.82),
+            (-75,  0, 4,20,20,0.70), ( 75,  0, 4,20,20,0.70),
+            (  0,-75, 4,20,20,0.70), (  0, 75, 4,20,20,0.70),
         ]
-        for cx, cz, count, sx, sz, sc in zones:
-            for _ in range(count):
-                bw = random.uniform(10, 22) * sc
-                bd = random.uniform(10, 22) * sc
-                bh = random.uniform(30, 120) * sc
+        for cx, cz, cnt, sx, sz, sc in zones:
+            for _ in range(cnt):
+                bw = random.uniform(9, 20) * sc
+                bd = random.uniform(9, 20) * sc
+                bh = random.uniform(25, 115) * sc
                 bx = cx + random.uniform(-sx, sx)
                 bz = cz + random.uniform(-sz, sz)
-                if abs(bx) < 14 or abs(bz) < 14: continue
-                if abs(abs(bx)-100) < 14 or abs(abs(bz)-100) < 14: continue
+                if abs(bx) < 15 or abs(bz) < 15:       continue
+                if abs(abs(bx) - 100) < 15 or abs(abs(bz) - 100) < 15: continue
                 self.buildings.append(Building(bx, bz, bw, bd, bh))
 
-        offsets = [(8, 8), (-8, 8), (8, -8), (-8, -8)]
+        # ── Lampu lalu lintas ────────────────────────────────────
         for ix in [0, 100, -100]:
             for iz in [0, 100, -100]:
-                for ox, oz in offsets:
-                    ph = random.uniform(0, 8.7)
-                    self.traffic_lights.append(TrafficLight(ix + ox, iz + oz, ph))
+                for ox, oz in [(8,8),(-8,8),(8,-8),(-8,-8)]:
+                    self.tls.append(TrafficLight(ix+ox, iz+oz, random.uniform(0, 8.7)))
 
-        for i in range(14):
-            self.cars.append(Car(random.uniform(-200,200),  4.5, 'px',  4.5))
-            self.cars.append(Car(random.uniform(-200,200), -4.5, 'nx', -4.5))
-        for i in range(14):
-            self.cars.append(Car( 4.5, random.uniform(-200,200), 'pz',  4.5))
-            self.cars.append(Car(-4.5, random.uniform(-200,200), 'nz', -4.5))
-        for z_base in [96, 104, -96, -104]:
-            d = 'px' if z_base > 0 else 'nx'
-            for i in range(8):
-                self.cars.append(Car(random.uniform(-200,200), z_base, d, z_base))
-        for x_base in [96, 104, -96, -104]:
-            d = 'pz' if x_base > 0 else 'nz'
-            for i in range(8):
-                self.cars.append(Car(x_base, random.uniform(-200,200), d, x_base))
+        # ── Mobil ────────────────────────────────────────────────
+        for _ in range(16):
+            self.cars += [Car(random.uniform(-200,200),  4.5, 'px'),
+                          Car(random.uniform(-200,200), -4.5, 'nx')]
+        for _ in range(16):
+            self.cars += [Car( 4.5, random.uniform(-200,200), 'pz'),
+                          Car(-4.5, random.uniform(-200,200), 'nz')]
+        for zb in [96, 104, -96, -104]:
+            d = 'px' if zb > 0 else 'nx'
+            for _ in range(8):
+                self.cars.append(Car(random.uniform(-200,200), zb, d))
+        for xb in [96, 104, -96, -104]:
+            d = 'pz' if xb > 0 else 'nz'
+            for _ in range(8):
+                self.cars.append(Car(xb, random.uniform(-200,200), d))
 
-        for i in range(-18, 19, 3):
-            for side in [-11, 11]:
-                self.street_lamps.append((i*10, 0, side))
-                self.street_lamps.append((side, 0, i*10))
+        # ── Lampu jalan ──────────────────────────────────────────
+        for i in range(-20, 21, 4):
+            for side in [-12, 12]:
+                self.lamps += [(i*10, 0, side), (side, 0, i*10)]
 
     def update(self, dt):
-        for tl in self.traffic_lights: tl.update(dt)
-        for car in self.cars:          car.update(dt, self.traffic_lights)
+        for tl in self.tls:  tl.update(dt)
+        for c  in self.cars: c.update(dt, self.tls)
 
-    def draw_ground(self, dark_t):
-        road_c  = lerp_color((0.18,0.18,0.18),(0.05,0.05,0.08), dark_t)
-        walk_c  = lerp_color((0.35,0.32,0.28),(0.12,0.10,0.10), dark_t)
-        grass_c = lerp_color((0.22,0.40,0.18),(0.04,0.08,0.04), dark_t)
-        mark_c  = lerp_color((0.9, 0.85,0.0), (0.4, 0.35,0.0), dark_t)
+    def draw(self, dark_t, sim_time=0.0):
+        self._ground(dark_t)
+        for b  in self.buildings: b.draw(dark_t, sim_time)
+        for tl in self.tls:       tl.draw()
+        for c  in self.cars:      c.draw(dark_t)
+        self._lamps(dark_t)
+        self._trees(dark_t)
+        self._park(dark_t)
 
-        draw_box(0, -0.5, 0, 500, 1, 500, grass_c, 10)
-        for z_pos in [0, 100, -100]:
-            draw_box(0, 0.05, z_pos, 440, 0.1, 20, road_c, 5)
-            for xi in range(-21, 22):
-                draw_box(xi*20, 0.06, z_pos, 8, 0.1, 0.25, mark_c, 5)
-        for x_pos in [0, 100, -100]:
-            draw_box(x_pos, 0.05, 0, 20, 0.1, 440, road_c, 5)
-            for zi in range(-21, 22):
-                draw_box(x_pos, 0.06, zi*20, 0.25, 0.1, 8, mark_c, 5)
-        for z_pos in [0, 100, -100]:
+    def _ground(self, dt):
+        rc = lerp3((0.17,0.17,0.17), (0.04,0.04,0.07), dt)
+        wc = lerp3((0.38,0.34,0.28), (0.10,0.09,0.09), dt)
+        gc = lerp3((0.20,0.42,0.16), (0.04,0.08,0.03), dt)
+        mk = lerp3((0.92,0.88,0.10), (0.38,0.35,0.04), dt)
+
+        draw_box(0, -0.5, 0, 520, 1, 520, gc, 5)
+        draw_box(0,  0.02, 0,  28, 0.1, 28,
+                 lerp3((0.50,0.48,0.42),(0.12,0.11,0.10), dt), 10)
+
+        for zp in [0, 100, -100]:
+            draw_box(0, 0.05, zp, 450, 0.12, 22, rc, 5)
+            for xi in range(-22, 23):
+                draw_box(xi*20, 0.07, zp, 8, 0.1, 0.28, mk, 4)
             for side in [-12, 12]:
-                draw_box(0, 0.3, z_pos + side, 440, 0.6, 4, walk_c, 5)
-        for x_pos in [0, 100, -100]:
+                draw_box(0, 0.32, zp+side, 450, 0.65, 4, wc, 8)
+
+        for xp in [0, 100, -100]:
+            draw_box(xp, 0.05, 0, 22, 0.12, 450, rc, 5)
+            for zi in range(-22, 23):
+                draw_box(xp, 0.07, zi*20, 0.28, 0.1, 8, mk, 4)
             for side in [-12, 12]:
-                draw_box(x_pos + side, 0.3, 0, 4, 0.6, 440, walk_c, 5)
+                draw_box(xp+side, 0.32, 0, 4, 0.65, 450, wc, 8)
 
-    def draw_street_lamps(self, dark_t):
-        pole_c  = (0.2, 0.2, 0.2)
-        base_em = lerp_color((0,0,0), (1.0,0.95,0.7), clamp(dark_t*2, 0, 1))
-        for lx, _, lz in self.street_lamps:
-            draw_cylinder(lx, 0, lz, 0.15, 0.15, 9, color=pole_c)
-            draw_sphere(lx, 9.5, lz, 0.5, 8, 6, (0.9, 0.85, 0.6), base_em, 10)
+    def _lamps(self, dt):
+        pc = lerp3((0.22,0.22,0.24), (0.08,0.08,0.10), dt)
+        em = lerp3((0,0,0), (1.00,0.95,0.72), clamp(dt * 2.4, 0, 1))
+        for lx, _, lz in self.lamps:
+            draw_cylinder(lx, 0, lz, 0.14, 0.14, 8.5, 8, pc)
+            draw_box(lx + 0.7, 8.8, lz, 1.4, 0.14, 0.14, pc)
+            draw_sphere(lx + 1.2, 9.1, lz, 0.50, 8, 6,
+                        (0.94, 0.90, 0.65), em, 10)
 
-    def draw_trees(self, dark_t):
-        trunk_c = lerp_color((0.36,0.22,0.10),(0.15,0.09,0.04), dark_t)
-        leaf_c  = lerp_color((0.18,0.50,0.12),(0.04,0.12,0.03), dark_t)
-        for lx, _, lz in self.street_lamps[::3]:
-            tx, tz = lx + 1.5, lz + 1.5
-            draw_cylinder(tx, 0, tz, 0.3, 0.3, 4, color=trunk_c)
-            draw_sphere(tx, 5.5, tz, 2.0, 10, 8, leaf_c, (0,0,0), 10)
+    def _trees(self, dt):
+        tc = lerp3((0.38,0.23,0.10), (0.14,0.08,0.03), dt)
+        lc = lerp3((0.16,0.52,0.14), (0.03,0.10,0.02), dt)
+        fc = lerp3((0.92,0.50,0.62), (0.28,0.12,0.18), dt)
+        for i, (lx, _, lz) in enumerate(self.lamps[::4]):
+            tx, tz = lx + 2.0, lz + 2.0
+            draw_cylinder(tx, 0, tz, 0.28, 0.28, 3.8, 8, tc)
+            draw_sphere(tx, 6.2, tz, 2.5, 10, 8, lc, (0,0,0), 10)
+            if i % 3 == 0:
+                draw_sphere(tx, 7.2, tz, 1.1, 8, 6, fc, (0,0,0), 15)
 
-    def draw(self, dark_t):
-        self.draw_ground(dark_t)
-        for b in self.buildings:      b.draw(dark_t)
-        for tl in self.traffic_lights: tl.draw()
-        for car in self.cars:          car.draw(dark_t)
-        self.draw_street_lamps(dark_t)
-        self.draw_trees(dark_t)
+    def _park(self, dt):
+        gc = lerp3((0.18,0.50,0.12), (0.04,0.10,0.02), dt)
+        draw_box(0, 0.12, 0, 22, 0.25, 22, gc, 5)
+        draw_cylinder(0, 0.38, 0, 4.5, 4.5, 0.4, 16,
+                      lerp3((0.55,0.52,0.48),(0.15,0.14,0.13), dt))
+        draw_sphere(0, 1.5, 0, 0.8, 12, 8,
+                    lerp3((0.52,0.62,0.80),(0.12,0.15,0.25), dt),
+                    (0,0,0), 60)
 
-# ─────────────────────────── SCENE LUAR ANGKASA ──────────────────
+
+# ══════════════════════════════════════════════════════════════════
+#  SCENE LUAR ANGKASA  (tidak berubah dari v4)
+# ══════════════════════════════════════════════════════════════════
 
 class SpaceScene:
     def __init__(self):
         random.seed(7)
-        self.stars = [
-            (random.uniform(-2000, 2000),
-             random.uniform(-2000, 2000),
-             random.uniform(-2000, 2000),
-             random.uniform(1.0, 3.5))
-            for _ in range(4000)
-        ]
-        self.moon_angle   = 0.0
-        self.moon_orbit_r = 250.0
+        self.stars = [(random.uniform(-3000,3000), random.uniform(-3000,3000),
+                       random.uniform(-3000,3000), random.uniform(0.5,1.0))
+                      for _ in range(6000)]
+        self.earth_angle = 0.0
+        self.moon_angle  = 0.0
+        self.earth_tilt  = 23.5
 
-    def update(self, dt, eclipse_t, lunar_t, moon_target_angle):
-        """Posisi bulan dikontrol oleh main simulation."""
-        # Interpolasi smooth ke target angle
-        diff = moon_target_angle - self.moon_angle
-        # Normalize ke -pi..pi agar rotasi searah
-        while diff >  math.pi: diff -= 2 * math.pi
-        while diff < -math.pi: diff += 2 * math.pi
-        self.moon_angle += diff * min(1.0, dt * 1.5)
+    def update(self, dt, solar_t, lunar_t, speed_mul=1.0):
+        self.earth_angle += EARTH_ORBIT_SPD * dt * speed_mul
+        self.moon_angle  += MOON_ORBIT_SPD  * dt * speed_mul
 
-    def draw(self, eclipse_t, lunar_t, eclipse_intensity):
-        # Bintang — redup saat siang, terang saat gerhana
-        star_bright = clamp(0.3 + eclipse_intensity * 0.7, 0.1, 1.0)
-        glDisable(GL_LIGHTING)
-        glPointSize(2.0)
-        glBegin(GL_POINTS)
-        for sx, sy, sz, brightness in self.stars:
-            b = (brightness / 3.5) * star_bright
-            glColor3f(b, b, b)
-            glVertex3f(sx, sy, sz)
-        glEnd()
-        glEnable(GL_LIGHTING)
+    def get_positions(self):
+        ex = EARTH_ORBIT_R * math.cos(self.earth_angle)
+        ey = EARTH_ORBIT_R * math.sin(self.earth_angle) * 0.06
+        ez = EARTH_ORBIT_R * math.sin(self.earth_angle)
+        inc = math.radians(5.1)
+        mx = ex + MOON_ORBIT_R * math.cos(self.moon_angle)
+        my = ey + MOON_ORBIT_R * math.sin(self.moon_angle) * math.sin(inc)
+        mz = ez + MOON_ORBIT_R * math.sin(self.moon_angle) * math.cos(inc)
+        return (ex, ey, ez), (mx, my, mz)
 
-        # Matahari dengan corona yang tumbuh saat gerhana akan terjadi
-        sun_em_int = lerp(3.0, 1.5, eclipse_intensity)
-        draw_sphere(-600, 0, 0, 90, 32, 16,
-                    (1.0, 0.92, 0.4),
-                    (1.0 * sun_em_int, 0.85 * sun_em_int, 0.3 * sun_em_int), 10)
+    def draw(self, solar_t, lunar_t, sim_time):
+        ep, mp = self.get_positions()
+        ex, ey, ez = ep;  mx, my, mz = mp
 
-        # Corona matahari — membesar & lebih terang menjelang gerhana
-        corona_scale = lerp(1.0, 2.5, smootherstep(eclipse_intensity))
-        glDisable(GL_LIGHTING)
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
-        glColor4f(1.0, 0.7, 0.2, lerp(0.06, 0.18, eclipse_intensity))
-        draw_sphere_raw(-600, 0, 0, 130 * corona_scale, 24, 12)
-        glColor4f(1.0, 0.5, 0.1, lerp(0.04, 0.12, eclipse_intensity))
-        draw_sphere_raw(-600, 0, 0, 170 * corona_scale, 20, 10)
-        glColor4f(1.0, 0.3, 0.05, lerp(0.0, 0.07, eclipse_intensity))
-        draw_sphere_raw(-600, 0, 0, 220 * corona_scale, 16, 8)
-        glDisable(GL_BLEND)
-        glEnable(GL_LIGHTING)
+        # Bintang
+        glDisable(GL_LIGHTING); glPointSize(2.0); glBegin(GL_POINTS)
+        for sx, sy, sz, br in self.stars:
+            b = br * (0.80 + 0.20 * math.sin(sim_time * 1.5 + sx * 0.01))
+            glColor3f(b, b, b * 0.95); glVertex3f(sx, sy, sz)
+        glEnd(); glEnable(GL_LIGHTING)
+
+        # Matahari solid
+        si = 4.0
+        draw_sphere(0, 0, 0, 95, 36, 18, (1.0,0.95,0.42), (si,si*0.88,si*0.30), 5)
+
+        # Corona
+        glDisable(GL_LIGHTING); glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+        pulse = 1.0 + 0.06*math.sin(sim_time*1.3) + 0.03*math.sin(sim_time*2.7)
+        base_ct = 1.0 - solar_t * 0.5
+        for rr, aa in [(130,0.090),(165,0.058),(205,0.035),(250,0.018)]:
+            glColor4f(1.0, 0.70, 0.20, aa * base_ct * pulse)
+            raw_sphere(0, 0, 0, rr, 20, 10)
+        if solar_t > 0.08:
+            ct = smoothstep(solar_t)
+            for rr, aa, cg, cb in [
+                (115,0.16*ct,0.82,0.25),(155,0.11*ct,0.58,0.10),
+                (200,0.07*ct,0.38,0.04),(255,0.040*ct,0.22,0.00),
+            ]:
+                glColor4f(1.0, cg, cb, aa * pulse); raw_sphere(0,0,0,rr,20,10)
+            if solar_t > 0.70:
+                pt = smoothstep((solar_t - 0.70) / 0.30)
+                for i in range(8):
+                    ang = i * (math.pi/4) + sim_time * 0.15
+                    px = 105*math.cos(ang);  pz = 105*math.sin(ang)
+                    pl = lerp(32, 60, pt) + 15*math.sin(sim_time*2.1+i)
+                    glColor4f(1.0, 0.35, 0.05, 0.42 * pt)
+                    glBegin(GL_TRIANGLES)
+                    glVertex3f(px-5*math.sin(ang), 0, pz+5*math.cos(ang))
+                    glVertex3f(px+5*math.sin(ang), 0, pz-5*math.cos(ang))
+                    glColor4f(1.0, 0.60, 0.10, 0.0)
+                    glVertex3f(px+pl*math.cos(ang), 0, pz+pl*math.sin(ang))
+                    glEnd()
+        glDisable(GL_BLEND); glEnable(GL_LIGHTING)
 
         # Bumi
-        draw_sphere(300, 0, 0, 80, 48, 24, (0.10, 0.35, 0.75), (0, 0, 0), 80)
-        glDisable(GL_LIGHTING)
-        draw_sphere_raw(300, 0, 0, 81, 24, 12, (0.18, 0.50, 0.14, 0.7))
-        glEnable(GL_LIGHTING)
+        glPushMatrix(); glTranslatef(ex, ey, ez)
+        glRotatef(self.earth_tilt, 0, 0, 1); glRotatef(sim_time * 15, 0, 1, 0)
+        set_mat(0.10, 0.35, 0.75, spec=0.6, shin=90)
+        q = gluNewQuadric(); gluQuadricNormals(q, GLU_SMOOTH)
+        gluSphere(q, 68, 48, 24); gluDeleteQuadric(q)
+        glDisable(GL_LIGHTING); glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        for lon, lat in [(20,10),(80,30),(-100,40),(-60,-15),(135,-25),(30,-20)]:
+            glColor4f(0.18, 0.52, 0.14, 0.72)
+            glPushMatrix(); glRotatef(lon,0,1,0); glRotatef(lat,1,0,0)
+            raw_sphere(0,0,0,69.8,12,8); glPopMatrix()
+        glColor4f(0.95, 0.97, 1.0, 0.28); raw_sphere(0,0,0,71.5,32,16)
+        glColor4f(0.30, 0.55, 0.95, 0.10); raw_sphere(0,0,0,74.0,24,12)
+        glDisable(GL_BLEND); glEnable(GL_LIGHTING); glPopMatrix()
 
         # Bulan
-        moon_x = 300 + self.moon_orbit_r * math.cos(self.moon_angle)
-        moon_y =        self.moon_orbit_r * math.sin(self.moon_angle) * 0.3
-        mc = lerp_color((0.82, 0.80, 0.74), (0.55, 0.12, 0.05), lunar_t)
-        me = lerp_color((0, 0, 0), (0.4, 0.05, 0.0), lunar_t)
-        draw_sphere(moon_x, moon_y, 0, 22, 32, 16, mc, me, 20)
-
-        # Umbra shadow cone saat gerhana matahari
-        if eclipse_t > 0.05:
-            self._draw_shadow_cone(moon_x, moon_y, eclipse_t)
-
-        # Penumbra gerhana bulan (bayangan bumi)
-        if lunar_t > 0.05:
-            self._draw_lunar_shadow(moon_x, moon_y, lunar_t)
-
-    def _draw_shadow_cone(self, mx, my, t):
-        alpha = smoothstep(t) * 0.45
-        glDisable(GL_LIGHTING)
-        glEnable(GL_BLEND)
+        mc = lerp3((0.82,0.80,0.74),(0.55,0.12,0.05), lunar_t)
+        me = lerp3((0,0,0),(0.42,0.06,0.01), lunar_t)
+        draw_sphere(mx, my, mz, 19, 28, 14, mc, me, 20)
+        glDisable(GL_LIGHTING); glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        # Kerucut umbra
-        glColor4f(0, 0, 0, alpha)
-        glBegin(GL_TRIANGLE_FAN)
-        glVertex3f(mx, my, 0)
-        steps = 20
-        for i in range(steps + 1):
-            ang = 2 * math.pi * i / steps
-            glVertex3f(300 + 25 * math.cos(ang), 25 * math.sin(ang), 0)
-        glEnd()
-        # Halo penumbra lebih besar, lebih transparan
-        glColor4f(0, 0, 0.05, alpha * 0.4)
-        glBegin(GL_TRIANGLE_FAN)
-        glVertex3f(mx, my, 0)
-        for i in range(steps + 1):
-            ang = 2 * math.pi * i / steps
-            glVertex3f(300 + 55 * math.cos(ang), 55 * math.sin(ang), 0)
-        glEnd()
-        glDisable(GL_BLEND)
-        glEnable(GL_LIGHTING)
+        for i in range(5):
+            ang = i * 1.25
+            cx2 = mx+12*math.cos(ang); cy2 = my+5*math.sin(ang); cz2 = mz+10*math.sin(ang*0.7)
+            glColor4f(0.30, 0.28, 0.26, 0.28); raw_sphere(cx2,cy2,cz2,4,8,5)
+        glDisable(GL_BLEND); glEnable(GL_LIGHTING)
 
-    def _draw_lunar_shadow(self, mx, my, t):
-        """Bayangan bumi menyelimuti bulan (gerhana bulan)."""
-        alpha = smoothstep(t) * 0.7
-        glDisable(GL_LIGHTING)
-        glEnable(GL_BLEND)
+        if solar_t > 0.05: self._solar_shadow(ex,ey,ez,mx,my,mz,solar_t)
+        if lunar_t > 0.05: self._lunar_shadow(ex,ey,ez,mx,my,mz,lunar_t)
+        self._orbit_paths(ex, ey, ez)
+
+    def _solar_shadow(self, ex, ey, ez, mx, my, mz, t):
+        alpha = smoothstep(t) * 0.62
+        glDisable(GL_LIGHTING); glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glColor4f(0.1, 0.0, 0.0, alpha)
-        draw_sphere_raw(mx, my, 0, 23, 24, 12)
-        glDisable(GL_BLEND)
-        glEnable(GL_LIGHTING)
+        sr = lerp(5, 42, smoothstep(t))
+        shx = ex+(mx-ex)*0.9; shy = ey+(my-ey)*0.9; shz = ez+(mz-ez)*0.9
+        glColor4f(0,0,0.02, alpha); glBegin(GL_TRIANGLE_FAN); glVertex3f(shx,shy,shz)
+        for i in range(29):
+            a = 2*math.pi*i/28
+            glVertex3f(shx+sr*math.cos(a), shy+sr*0.3*math.sin(a), shz+sr*math.sin(a))
+        glEnd()
+        glColor4f(0,0,0.04, alpha*0.30); glBegin(GL_TRIANGLE_FAN); glVertex3f(shx,shy,shz)
+        sr2 = sr*2.5
+        for i in range(29):
+            a = 2*math.pi*i/28
+            glVertex3f(shx+sr2*math.cos(a), shy+sr2*0.28*math.sin(a), shz+sr2*math.sin(a))
+        glEnd()
+        glColor4f(0,0,0, alpha*0.40); glBegin(GL_TRIANGLE_FAN); glVertex3f(mx,my,mz)
+        for i in range(29):
+            a = 2*math.pi*i/28
+            glVertex3f(ex+sr*0.5*math.cos(a), ey+sr*0.14*math.sin(a), ez+sr*0.5*math.sin(a))
+        glEnd()
+        glDisable(GL_BLEND); glEnable(GL_LIGHTING)
 
-# ─────────────────────────── FREE CAMERA ─────────────────────────
+    def _lunar_shadow(self, ex, ey, ez, mx, my, mz, t):
+        alpha = smoothstep(t) * 0.82
+        glDisable(GL_LIGHTING); glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glColor4f(0.06,0.0,0.0, alpha*0.88); raw_sphere(mx,my,mz,20.5,20,12)
+        glColor4f(0.32,0.04,0.02, alpha*0.42); raw_sphere(mx,my,mz,22.5,16,10)
+        glColor4f(0,0,0, alpha*0.26); glBegin(GL_TRIANGLE_FAN); glVertex3f(ex,ey,ez)
+        for i in range(21):
+            a = 2*math.pi*i/20
+            glVertex3f(mx+26*math.cos(a), my+10*math.sin(a), mz+26*math.sin(a))
+        glEnd()
+        glDisable(GL_BLEND); glEnable(GL_LIGHTING)
+
+    def _orbit_paths(self, ex, ey, ez):
+        glDisable(GL_LIGHTING); glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glColor4f(0.4,0.6,0.8,0.15); glBegin(GL_LINE_LOOP)
+        for i in range(80):
+            a = 2*math.pi*i/80
+            glVertex3f(EARTH_ORBIT_R*math.cos(a), 0, EARTH_ORBIT_R*math.sin(a))
+        glEnd()
+        glColor4f(0.7,0.7,0.75,0.12); glBegin(GL_LINE_LOOP)
+        for i in range(60):
+            a = 2*math.pi*i/60
+            glVertex3f(ex+MOON_ORBIT_R*math.cos(a), ey, ez+MOON_ORBIT_R*math.sin(a))
+        glEnd()
+        glDisable(GL_BLEND); glEnable(GL_LIGHTING)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  FREE CAMERA
+# ══════════════════════════════════════════════════════════════════
 
 class FreeCamera:
-    """Kamera bebas terbang dengan WASD + mouse look."""
     def __init__(self):
-        self.pos   = [0.0, 80.0, 300.0]
-        self.yaw   = 180.0   # derajat — arah menghadap -Z
-        self.pitch = -10.0   # derajat — sedikit ke bawah
-        self.speed = 60.0
-        self.sens  = 0.18
-        self._locked = False
+        self.pos   = [0.0, 80.0, 280.0]
+        self.yaw   = 180.0
+        self.pitch = -12.0
+        self.speed = 65.0
+        self.sens  = 0.17
 
     def apply(self):
         glLoadIdentity()
-        # Hitung forward vector
-        y = math.radians(self.yaw)
-        p = math.radians(self.pitch)
-        fx = math.sin(y) * math.cos(p)
-        fy = math.sin(p)
-        fz = -math.cos(y) * math.cos(p)
-        # Titik lihat
-        tx = self.pos[0] + fx
-        ty = self.pos[1] + fy
-        tz = self.pos[2] + fz
-        gluLookAt(self.pos[0], self.pos[1], self.pos[2],
-                  tx, ty, tz, 0, 1, 0)
+        y = math.radians(self.yaw);  p = math.radians(self.pitch)
+        fx = math.sin(y)*math.cos(p); fy = math.sin(p); fz = -math.cos(y)*math.cos(p)
+        gluLookAt(*self.pos, self.pos[0]+fx, self.pos[1]+fy, self.pos[2]+fz, 0,1,0)
 
-    def update(self, dt, keys, mouse_rel, active):
-        if not active:
-            return
-        # Rotasi kamera
-        dx, dy = mouse_rel
-        self.yaw   += dx * self.sens
-        self.pitch  = clamp(self.pitch - dy * self.sens, -89.0, 89.0)
+    def update(self, dt, keys, mdx, mdy):
+        self.yaw   += mdx * self.sens
+        self.pitch  = clamp(self.pitch - mdy * self.sens, -89, 89)
+        y = math.radians(self.yaw);  p = math.radians(self.pitch)
+        fx = math.sin(y)*math.cos(p); fy = math.sin(p); fz = -math.cos(y)*math.cos(p)
+        rx = math.cos(y);  rz = math.sin(y)
+        spd = self.speed * (5.0 if (keys[K_LSHIFT] or keys[K_RSHIFT]) else 1.0) * dt
+        if keys[K_w]: self.pos[0]+=fx*spd; self.pos[1]+=fy*spd; self.pos[2]+=fz*spd
+        if keys[K_s]: self.pos[0]-=fx*spd; self.pos[1]-=fy*spd; self.pos[2]-=fz*spd
+        if keys[K_a]: self.pos[0]-=rx*spd; self.pos[2]-=rz*spd
+        if keys[K_d]: self.pos[0]+=rx*spd; self.pos[2]+=rz*spd
+        if keys[K_q]: self.pos[1]-=spd
+        if keys[K_e]: self.pos[1]+=spd
 
-        # Hitung arah
-        y = math.radians(self.yaw)
-        p = math.radians(self.pitch)
-        fx = math.sin(y) * math.cos(p)
-        fy = math.sin(p)
-        fz = -math.cos(y) * math.cos(p)
-        # Right vector
-        rx =  math.cos(y)
-        ry =  0.0
-        rz =  math.sin(y)
 
-        spd = self.speed * (5.0 if keys[K_LSHIFT] or keys[K_RSHIFT] else 1.0)
-        move = spd * dt
-
-        if keys[K_w]:
-            self.pos[0] += fx * move; self.pos[1] += fy * move; self.pos[2] += fz * move
-        if keys[K_s]:
-            self.pos[0] -= fx * move; self.pos[1] -= fy * move; self.pos[2] -= fz * move
-        if keys[K_a]:
-            self.pos[0] -= rx * move; self.pos[2] -= rz * move
-        if keys[K_d]:
-            self.pos[0] += rx * move; self.pos[2] += rz * move
-        if keys[K_q]:
-            self.pos[1] -= move
-        if keys[K_e]:
-            self.pos[1] += move
-
-# ─────────────────────────── ECLIPSE CONTROLLER ──────────────────
+# ══════════════════════════════════════════════════════════════════
+#  ECLIPSE CONTROLLER  (tidak berubah dari v4)
+# ══════════════════════════════════════════════════════════════════
 
 class EclipseController:
-    """
-    Mengatur siklus gerhana otomatis + kontrol manual.
-    Siklus:
-        idle  → approach → peak → recede → idle
-    Setiap siklus memiliki durasi total CYCLE_DURATION detik.
-    Tombol manual: mempercepat siklus saat ini (fast-forward x5).
-    """
-    # Fase: (nama, fraksi waktu dari total siklus)
-    PHASES = [
-        ('idle',     0.30),   # 30% waktu normal (tidak gerhana)
-        ('approach', 0.25),   # 25% transisi masuk
-        ('peak',     0.20),   # 20% puncak gerhana
-        ('recede',   0.25),   # 25% transisi keluar
-    ]
+    PHASES = [('idle',0.28),('approach',0.24),('peak',0.20),('recede',0.28)]
 
-    def __init__(self, cycle_duration, start_phase='idle', start_frac=0.0):
-        self.cycle_duration = cycle_duration
-        self._phase_names  = [p[0] for p in self.PHASES]
-        self._phase_fracs  = [p[1] for p in self.PHASES]
-        # Waktu total per fase
-        self._phase_dur    = [f * cycle_duration for f in self._phase_fracs]
-        # State
-        self._phase_idx    = self._phase_names.index(start_phase)
-        self._phase_timer  = start_frac * self._phase_dur[self._phase_idx]
-        self.intensity     = 0.0   # 0..1, seberapa dalam gerhana
-        self.boosted       = False  # apakah fast-forward aktif
-
-    def boost(self):
-        """Tombol ditekan: aktifkan fast-forward."""
-        self.boosted = True
-
-    def release_boost(self):
-        self.boosted = False
+    def __init__(self, dur, start='idle', frac=0.0):
+        self.dur    = dur
+        self._names = [p[0] for p in self.PHASES]
+        self._durs  = [p[1]*dur for p in self.PHASES]
+        self._pi    = self._names.index(start)
+        self._t     = frac * self._durs[self._pi]
+        self.intensity = 0.0
+        self.boosted   = False
 
     def update(self, dt):
-        speed_mul = 5.0 if self.boosted else 1.0
-        self._phase_timer += dt * speed_mul
-
-        # Cek apakah fase selesai
-        phase_dur = self._phase_dur[self._phase_idx]
-        while self._phase_timer >= phase_dur:
-            self._phase_timer -= phase_dur
-            self._phase_idx = (self._phase_idx + 1) % len(self.PHASES)
-            phase_dur = self._phase_dur[self._phase_idx]
-
-        # Hitung intensitas berdasarkan fase
-        phase_name = self._phase_names[self._phase_idx]
-        t = self._phase_timer / phase_dur if phase_dur > 0 else 0.0
-
-        if phase_name == 'idle':
-            self.intensity = 0.0
-        elif phase_name == 'approach':
-            # Naik perlahan dengan ease-in-out sine
-            self.intensity = ease_in_out_sine(t)
-        elif phase_name == 'peak':
-            # Di puncak, sedikit berfluktuasi (efek corona)
-            flicker = 0.015 * math.sin(self._phase_timer * 3.7)
-            self.intensity = clamp(1.0 + flicker, 0.95, 1.05)
-        elif phase_name == 'recede':
-            # Turun dengan ease (lebih lambat di awal, cepat di akhir)
-            self.intensity = ease_in_out_sine(1.0 - t)
-
+        spd = 5.0 if self.boosted else 1.0
+        self._t += dt * spd
+        while self._t >= self._durs[self._pi]:
+            self._t -= self._durs[self._pi]
+            self._pi = (self._pi + 1) % 4
+        t = self._t / self._durs[self._pi] if self._durs[self._pi] > 0 else 0
+        n = self._names[self._pi]
+        if   n == 'idle':     self.intensity = 0.0
+        elif n == 'approach': self.intensity = ease_sine(t)
+        elif n == 'peak':     self.intensity = clamp(1.0 + 0.012*math.sin(self._t*4.1), 0.95, 1.05)
+        elif n == 'recede':   self.intensity = ease_sine(1.0 - t)
         self.intensity = clamp(self.intensity, 0.0, 1.0)
 
     @property
-    def phase(self):
-        return self._phase_names[self._phase_idx]
+    def phase(self): return self._names[self._pi]
 
-    @property
-    def phase_progress(self):
-        phase_dur = self._phase_dur[self._phase_idx]
-        return self._phase_timer / phase_dur if phase_dur > 0 else 0.0
 
-    @property
-    def moon_target_angle(self):
-        """Sudut target bulan berdasarkan fase gerhana matahari."""
-        phase_name = self._phase_names[self._phase_idx]
-        t = self.phase_progress
-        # Orbit normal: bulan mengelilingi orbit -pi..pi
-        # Saat gerhana matahari: bulan di -pi/2 (di antara matahari dan bumi)
-        normal_angle = self._phase_timer * 0.008 + 1.0
-        eclipse_angle = -math.pi / 2
+# ══════════════════════════════════════════════════════════════════
+#  SIMULASI UTAMA
+# ══════════════════════════════════════════════════════════════════
 
-        if phase_name == 'idle':
-            return normal_angle
-        elif phase_name == 'approach':
-            return lerp(normal_angle, eclipse_angle, ease_in_out_sine(t))
-        elif phase_name == 'peak':
-            return eclipse_angle
-        elif phase_name == 'recede':
-            return lerp(eclipse_angle, normal_angle + 0.5, ease_in_out_sine(t))
-        return normal_angle
-
-# ─────────────────────────── RENDERER UTAMA ──────────────────────
+# helper kecil untuk glColor3f
+def gl_color3(r, g, b): glColor3f(r, g, b)
 
 class EclipseSimulation:
     def __init__(self):
         pygame.init()
         pygame.display.set_caption(TITLE)
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), DOUBLEBUF | OPENGL)
-        pygame.display.set_icon(pygame.Surface((32, 32)))
 
         glEnable(GL_DEPTH_TEST)
-        glEnable(GL_LIGHTING)
-        glEnable(GL_LIGHT0)
-        glEnable(GL_LIGHT1)
-        glEnable(GL_COLOR_MATERIAL)
-        glEnable(GL_NORMALIZE)
+        glEnable(GL_LIGHTING);  glEnable(GL_LIGHT0);  glEnable(GL_LIGHT1)
+        glEnable(GL_COLOR_MATERIAL); glEnable(GL_NORMALIZE)
         glShadeModel(GL_SMOOTH)
-        glEnable(GL_FOG)
+        glEnable(GL_FOG); glFogi(GL_FOG_MODE, GL_LINEAR)
 
-        self._setup_projection()
+        glMatrixMode(GL_PROJECTION); glLoadIdentity()
+        gluPerspective(58.0, WIDTH/HEIGHT, 0.5, 12000.0)
+        glMatrixMode(GL_MODELVIEW)
 
-        # ── Scroll / scene blend ──
-        self.scroll_t        = 0.0
-        self.target_scroll_t = 0.0
+        self.scroll_t    = 0.0
+        self.target_st   = 0.0
+        self.solar_ctrl  = EclipseController(ECLIPSE_CYCLE, 'idle', 0.0)
+        self.lunar_ctrl  = EclipseController(LUNAR_CYCLE,   'idle', 0.38)
+        self._ss         = 0.0    # smooth solar intensity
+        self._sl         = 0.0    # smooth lunar intensity
+        self._sky        = list(SKY_DAY)
 
-        # ── Eclipse controllers (loop otomatis) ──
-        self.solar_ctrl = EclipseController(ECLIPSE_CYCLE_DURATION,
-                                            'idle', 0.0)
-        self.lunar_ctrl = EclipseController(LUNAR_CYCLE_DURATION,
-                                            'idle', 0.3)   # offset agar tidak barengan
+        self.free_cam    = False
+        self.fcam        = FreeCamera()
+        self.o_pitch     = 22.0
+        self.o_yaw       = 35.0
+        self.mouse_dn    = False
+        self.last_m      = (0, 0)
 
-        # Nilai terakhir intensitas yang sudah di-smooth (untuk transisi langit)
-        self._smooth_solar = 0.0
-        self._smooth_lunar = 0.0
+        self.sim_time    = 0.0
+        self.sun_angle   = 0.3    # posisi awal matahari di orbit kota
+        self.space_yaw   = 30.0
+        self.space_pitch = 15.0
 
-        # Warna langit yang di-smooth
-        self._sky_r = list(SKY_DAY)
-
-        # ── Kamera ──
-        self.free_cam_active = False
-        self.free_cam        = FreeCamera()
-        self.orbit_pitch     = 25.0
-        self.orbit_yaw       = 30.0
-        self.mouse_down      = False
-        self.last_mouse      = (0, 0)
-
-        # Scene objects
         self.city  = City()
         self.space = SpaceScene()
 
-        # Font
-        self.font_big  = pygame.font.SysFont('Arial', 22, bold=True)
-        self.font_sm   = pygame.font.SysFont('Arial', 15)
-        self.clock     = pygame.time.Clock()
-        self.running   = True
-        self.sim_time  = 0.0
+        self.font_b = pygame.font.SysFont('Arial', 22, bold=True)
+        self.font_s = pygame.font.SysFont('Arial', 14)
+        self.clock  = pygame.time.Clock()
+        self.running = True
+        self._boost  = False
 
-        # Tombol boost (SPACE)
-        self._space_held = False
+    # ─── Pencahayaan dinamis ───────────────────────────────────
 
-    def _setup_projection(self):
-        glMatrixMode(GL_PROJECTION)
-        glLoadIdentity()
-        gluPerspective(60.0, WIDTH / HEIGHT, 0.5, 8000.0)
-        glMatrixMode(GL_MODELVIEW)
-
-    # ───── Pencahayaan ─────
-
-    def _setup_lights(self, dark_t):
-        """Setup pencahayaan dinamis berdasarkan fase gerhana."""
-        et = self._smooth_solar
-        lt = self._smooth_lunar
-
-        # Warna matahari berubah: putih → oranye merah saat gerhana
-        sun_col_r = lerp(1.00, 0.75, et)
-        sun_col_g = lerp(0.97, 0.35, et)
-        sun_col_b = lerp(0.88, 0.15, et)
-        sun_brightness = max(0.0, 1.0 - dark_t * 0.97)
-
-        glLightfv(GL_LIGHT0, GL_POSITION,  [200.0, 400.0, 150.0, 0.0])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE,
-                  [sun_col_r * sun_brightness, sun_col_g * sun_brightness,
-                   sun_col_b * sun_brightness, 1.0])
+    def _lights(self, dark_t, sun_pos=None):
+        et = self._ss
+        sr = lerp(1.0, 0.72, et);  sg = lerp(0.96, 0.32, et);  sb = lerp(0.86, 0.12, et)
+        bri = max(0.0, 1.0 - dark_t * 0.97)
+        pos = list(sun_pos) + [0.0] if sun_pos else [300, 500, 200, 0]
+        glLightfv(GL_LIGHT0, GL_POSITION, pos)
+        glLightfv(GL_LIGHT0, GL_DIFFUSE,  [sr*bri, sg*bri, sb*bri, 1])
         glLightfv(GL_LIGHT0, GL_AMBIENT,
-                  [max(0.02, 0.25 * (1 - dark_t)),
-                   max(0.02, 0.22 * (1 - dark_t)),
-                   max(0.04, 0.28 * (1 - dark_t)), 1.0])
-        glLightfv(GL_LIGHT0, GL_SPECULAR,
-                  [sun_brightness * 0.5 * sun_col_r,
-                   sun_brightness * 0.5 * sun_col_g,
-                   sun_brightness * 0.4 * sun_col_b, 1.0])
+                  [max(0.02, 0.22*(1-dark_t)), max(0.02, 0.20*(1-dark_t)),
+                   max(0.04, 0.26*(1-dark_t)), 1])
+        glLightfv(GL_LIGHT0, GL_SPECULAR, [sr*bri*0.5, sg*bri*0.5, sb*bri*0.4, 1])
+        glow = dark_t * 0.35
+        glLightfv(GL_LIGHT1, GL_POSITION, [0, 1, 0, 0])
+        glLightfv(GL_LIGHT1, GL_DIFFUSE,  [glow*0.82, glow*0.65, glow*0.38, 1])
+        glLightfv(GL_LIGHT1, GL_AMBIENT,  [0, 0, 0, 1])
 
-        city_glow = dark_t * 0.35
-        glLightfv(GL_LIGHT1, GL_POSITION, [0.0, 1.0, 0.0, 0.0])
-        glLightfv(GL_LIGHT1, GL_DIFFUSE,
-                  [city_glow * 0.8, city_glow * 0.7, city_glow * 0.4, 1.0])
-        glLightfv(GL_LIGHT1, GL_AMBIENT,  [0.0, 0.0, 0.0, 1.0])
-
-    def _setup_fog(self, dark_t):
-        # Warna fog multi-tahap
+    def _fog(self, dark_t):
         if dark_t < 0.5:
-            fog_color = lerp_color(FOG_DAY, FOG_DUSK, dark_t * 2)
+            fc = lerp3(FOG_DAY, FOG_DUSK, dark_t * 2)
         else:
-            fog_color = lerp_color(FOG_DUSK, FOG_NIGHT, (dark_t - 0.5) * 2)
-        fc = list(fog_color) + [1.0]
-        glFogfv(GL_FOG_COLOR, fc)
-        glFogf(GL_FOG_MODE, GL_LINEAR)
-        fog_near = lerp(250.0, 80.0, dark_t)
-        fog_far  = lerp(700.0, 350.0, dark_t)
-        glFogf(GL_FOG_START, fog_near)
-        glFogf(GL_FOG_END,   fog_far)
+            fc = lerp3(FOG_DUSK, FOG_NIGHT, (dark_t - 0.5) * 2)
+        glFogfv(GL_FOG_COLOR, list(fc) + [1])
+        glFogf(GL_FOG_START, lerp(265, 88, dark_t))
+        glFogf(GL_FOG_END,   lerp(760, 385, dark_t))
 
-    # ───── Update ─────
+    # ─── Update ───────────────────────────────────────────────
 
     def _update(self, dt):
-        self.sim_time += dt
+        self.sim_time  += dt
+        self.sun_angle += SUN_SPEED * dt
 
-        # Scroll
-        self.scroll_t += (self.target_scroll_t - self.scroll_t) * min(1.0, dt * 5.0)
+        self.scroll_t += (self.target_st - self.scroll_t) * min(1.0, dt * 4.5)
         self.scroll_t  = clamp(self.scroll_t, 0.0, 1.0)
 
-        # Boost
-        solar_boost = self._space_held
-        lunar_boost = self._space_held
-
-        if solar_boost: self.solar_ctrl.boost()
-        else:           self.solar_ctrl.release_boost()
-        if lunar_boost: self.lunar_ctrl.boost()
-        else:           self.lunar_ctrl.release_boost()
-
-        # Update controllers
+        self.solar_ctrl.boosted = self._boost
+        self.lunar_ctrl.boosted = self._boost
         self.solar_ctrl.update(dt)
         self.lunar_ctrl.update(dt)
 
-        # Smooth intensitas (menghindari lompatan kasar)
-        smooth_rate = 3.0
-        self._smooth_solar += (self.solar_ctrl.intensity - self._smooth_solar) * min(1.0, dt * smooth_rate)
-        self._smooth_lunar += (self.lunar_ctrl.intensity - self._smooth_lunar) * min(1.0, dt * smooth_rate)
+        smooth = 2.5
+        self._ss += (self.solar_ctrl.intensity - self._ss) * min(1.0, dt * smooth)
+        self._sl += (self.lunar_ctrl.intensity - self._sl) * min(1.0, dt * smooth)
 
-        # Warna langit yang di-interpolasi dengan multi-tahap
-        dark_t_raw = max(self._smooth_solar, self._smooth_lunar)
-        et = self._smooth_solar
-
-        # Langit saat gerhana matahari: siang → senja → malam
-        if dark_t_raw < 0.35:
-            target_sky = lerp_color(SKY_DAY, SKY_DUSK_EARLY, dark_t_raw / 0.35)
-        elif dark_t_raw < 0.65:
-            target_sky = lerp_color(SKY_DUSK_EARLY, SKY_DUSK_MID, (dark_t_raw - 0.35) / 0.30)
-        else:
-            target_sky = lerp_color(SKY_DUSK_MID, SKY_NIGHT, (dark_t_raw - 0.65) / 0.35)
-
-        # Smooth perubahan warna langit
-        sky_smooth = min(1.0, dt * 1.5)
+        dt_raw = max(self._ss, self._sl)
+        if dt_raw < 0.35:   tgt = lerp3(SKY_DAY, SKY_DUSK_EARLY, dt_raw / 0.35)
+        elif dt_raw < 0.65: tgt = lerp3(SKY_DUSK_EARLY, SKY_DUSK_MID, (dt_raw-0.35)/0.30)
+        else:               tgt = lerp3(SKY_DUSK_MID, SKY_NIGHT, (dt_raw-0.65)/0.35)
         for i in range(3):
-            self._sky_r[i] += (target_sky[i] - self._sky_r[i]) * sky_smooth
+            self._sky[i] += (tgt[i] - self._sky[i]) * min(1.0, dt * 1.2)
 
-        # Update moon angle di space scene
-        moon_target = self.solar_ctrl.moon_target_angle
-        self.space.update(dt, self._smooth_solar, self._smooth_lunar, moon_target)
-
-        # Update city
+        self.space.update(dt, self._ss, self._sl,
+                          speed_mul=5.0 if self._boost else 1.0)
         self.city.update(dt)
 
-        # Free cam
-        if self.free_cam_active:
+        if self.free_cam:
             keys = pygame.key.get_pressed()
-            mouse_rel = pygame.mouse.get_rel() if pygame.mouse.get_focused() else (0, 0)
-            self.free_cam.update(dt, keys, mouse_rel, True)
+            dx, dy = pygame.mouse.get_rel()
+            self.fcam.update(dt, keys, dx, dy)
 
-    def _dark_t(self):
-        return max(self._smooth_solar, self._smooth_lunar)
+    def _dark_t(self): return max(self._ss, self._sl)
 
-    # ───── Kamera ─────
+    # ─── Posisi matahari di langit kota ───────────────────────
 
-    def _camera_city_orbit(self):
-        dist = lerp(180.0, 600.0, self.scroll_t)
-        elev = lerp(40.0, 200.0, self.scroll_t)
-        pitch_rad = math.radians(self.orbit_pitch)
-        yaw_rad   = math.radians(self.orbit_yaw)
-        cx = dist * math.cos(pitch_rad) * math.sin(yaw_rad)
-        cz = dist * math.cos(pitch_rad) * math.cos(yaw_rad)
-        cy = elev + dist * math.sin(pitch_rad) * 0.5
+    def _sun_pos(self):
+        """
+        Orbit eliptik matahari di langit kota.
+        Sumbu horizontal (X) = SUN_ORBIT_R_H
+        Sumbu vertikal  (Y) = SUN_ORBIT_R_V
+        Matahari selalu di atas horizon (y > SUN_R * 2).
+        """
+        sa = self.sun_angle
+        sx =  SUN_ORBIT_R_H * math.cos(sa)
+        sy =  SUN_ORBIT_R_V * math.sin(sa)
+        sz = -120.0    # kedalaman (jauh di belakang kota)
+
+        # Pastikan matahari tidak tenggelam di bawah horizon
+        if sy < SUN_R * 2.0:
+            sy = SUN_R * 2.0 + abs(sy - SUN_R * 2.0) * 0.3
+        return sx, sy, sz
+
+    # ─── Kamera kota ──────────────────────────────────────────
+
+    def _cam_city(self):
+        d  = lerp(175.0, 550.0, self.scroll_t)
+        e  = lerp(38.0,  180.0, self.scroll_t)
+        pr = math.radians(self.o_pitch)
+        yr = math.radians(self.o_yaw)
+        cx = d * math.cos(pr) * math.sin(yr)
+        cz = d * math.cos(pr) * math.cos(yr)
+        cy = e + d * math.sin(pr) * 0.5
         glLoadIdentity()
-        gluLookAt(cx, cy, cz, 0, lerp(20, 80, self.scroll_t), 0, 0, 1, 0)
+        gluLookAt(cx, cy, cz, 0, lerp(18, 70, self.scroll_t), 0, 0, 1, 0)
 
-    def _camera_space(self):
+    def _cam_space(self):
+        dist = 900
+        pr = math.radians(self.space_pitch)
+        yr = math.radians(self.space_yaw)
+        cx = dist * math.cos(pr) * math.sin(yr)
+        cy = dist * math.sin(pr)
+        cz = dist * math.cos(pr) * math.cos(yr)
+        ep, _ = self.space.get_positions()
+        lx = ep[0] * 0.4;  ly = ep[1] * 0.4;  lz = ep[2] * 0.4
         glLoadIdentity()
-        gluLookAt(0, 80, 600, -100, 0, 0, 0, 1, 0)
+        gluLookAt(cx, cy, cz, lx, ly, lz, 0, 1, 0)
 
-    # ───── Render ─────
+    # ─── Gambar scene kota ─────────────────────────────────────
 
-    def _draw_sky_background(self):
-        sky_space = (0.0, 0.0, 0.02)
-        sky_c = lerp_color(tuple(self._sky_r), sky_space, self.scroll_t)
-        glClearColor(*sky_c, 1.0)
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-    def _draw_city_scene(self, dark_t):
+    def _draw_city(self, dark_t):
         if self.scroll_t > 0.98:
             return
-        self.city.draw(dark_t)
 
-        # Matahari di kota
-        sun_x = 200 * math.cos(self.sim_time * 0.04)
-        sun_y = 150 + 30 * math.sin(self.sim_time * 0.02)
-        sun_z = 200 * math.sin(self.sim_time * 0.04) - 300
-        # Warna matahari: cerah → oranye → merah saat gerhana
-        sr = lerp(1.0, 0.9,  self._smooth_solar)
-        sg = lerp(0.9, 0.35, self._smooth_solar)
-        sb = lerp(0.5, 0.05, self._smooth_solar)
-        sun_size = lerp(18, 14, self._smooth_solar)
-        glDisable(GL_LIGHTING)
-        glColor3f(sr, sg, sb)
-        draw_sphere_raw(sun_x, sun_y, sun_z, sun_size, 16, 10)
+        self.city.draw(dark_t, self.sim_time)
 
-        # Halo matahari menjelang gerhana
-        if self._smooth_solar > 0.1:
-            glEnable(GL_BLEND)
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE)
-            alpha = self._smooth_solar * 0.25
-            glColor4f(sr, sg * 0.5, 0.0, alpha)
-            draw_sphere_raw(sun_x, sun_y, sun_z, sun_size * 1.6, 12, 8)
-            glColor4f(sr, sg * 0.3, 0.0, alpha * 0.5)
-            draw_sphere_raw(sun_x, sun_y, sun_z, sun_size * 2.4, 10, 6)
-            glDisable(GL_BLEND)
+        sx, sy, sz = self._sun_pos()
 
-        glEnable(GL_LIGHTING)
+        # Perbarui posisi cahaya agar matching dengan posisi matahari
+        self._lights(dark_t, sun_pos=(sx, sy, sz))
 
-        # Bulan di kota (terlihat saat cukup gelap)
-        if dark_t > 0.1:
-            mc = lerp_color((0.85, 0.82, 0.76), (0.6, 0.12, 0.04), self._smooth_lunar)
-            me = lerp_color((0,0,0),(0.4,0.05,0.0), self._smooth_lunar)
-            draw_sphere(-sun_x * 0.3, sun_y * 0.8, sun_z * 0.3 - 50,
-                        8, 20, 10, mc, me, 20)
+        # Gambar matahari
+        draw_city_sun(sx, sy, sz, self._ss, dark_t, self.sim_time)
 
-    def _draw_space_scene(self):
+        # Posisi bulan: berlawanan dengan matahari (sisi lain langit)
+        # Bulan terlihat lebih jelas karena ukurannya diperbesar
+        moon_sx = sx * (-0.55) - 18
+        moon_sy = sy *   0.62  + 30
+        moon_sz = sz *   0.40  - 50
+
+        # Gambar bulan
+        draw_city_moon(moon_sx, moon_sy, moon_sz,
+                       self._sl, dark_t, self._ss, self.sim_time)
+
+        # Overlay: siluet bulan menutupi matahari saat gerhana solar
+        if self._ss > 0.35:
+            draw_moon_silhouette_over_sun(sx, sy, sz, self._ss, self.sim_time)
+
+    # ─── Gambar scene angkasa ──────────────────────────────────
+
+    def _draw_space(self):
         if self.scroll_t < 0.02:
             return
-        self._camera_space()
-        self._setup_lights(self._dark_t())
-        self.space.draw(self._smooth_solar, self._smooth_lunar, self._smooth_solar)
+        glDisable(GL_FOG)
+        glLightfv(GL_LIGHT0, GL_POSITION,  [0, 0, 0, 1.0])
+        glLightfv(GL_LIGHT0, GL_DIFFUSE,   [1.5, 1.4, 1.1, 1])
+        glLightfv(GL_LIGHT0, GL_AMBIENT,   [0.02, 0.02, 0.03, 1])
+        glLightfv(GL_LIGHT0, GL_SPECULAR,  [0.8, 0.8, 0.7, 1])
+        glLightf (GL_LIGHT0, GL_CONSTANT_ATTENUATION,  1.0)
+        glLightf (GL_LIGHT0, GL_LINEAR_ATTENUATION,    0.0)
+        glLightf (GL_LIGHT0, GL_QUADRATIC_ATTENUATION, 0.0)
+        glLightfv(GL_LIGHT1, GL_DIFFUSE,   [0, 0, 0, 1])
+        self.space.draw(self._ss, self._sl, self.sim_time)
+        glEnable(GL_FOG)
+
+    # ─── Render utama ──────────────────────────────────────────
 
     def _render(self):
         dark_t = self._dark_t()
+        st     = self.scroll_t
 
-        self._draw_sky_background()
-        self._setup_fog(dark_t)
-        self._setup_lights(dark_t)
+        sky = lerp3(tuple(self._sky), (0.0, 0.0, 0.01), smoothstep(st))
+        glClearColor(*sky, 1.0)
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+        self._fog(dark_t)
+        self._lights(dark_t)
 
         # Kamera
-        if self.free_cam_active:
-            self.free_cam.apply()
+        if self.free_cam:
+            self.fcam.apply()
+        elif st < 0.5:
+            self._cam_city()
         else:
-            self._camera_city_orbit()
+            self._cam_space()
 
-        self._draw_city_scene(dark_t)
+        # Scene kota
+        if st < 0.95:
+            self._draw_city(dark_t)
 
-        if self.scroll_t > 0.05:
-            glDisable(GL_FOG)
+        # Scene angkasa
+        if st > 0.10:
             glEnable(GL_BLEND)
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-            self._draw_space_scene()
+            self._cam_space()
+            self._draw_space()
             glDisable(GL_BLEND)
-            glEnable(GL_FOG)
 
-        self._overlay_hud(dark_t)
+        self._hud(dark_t)
         pygame.display.flip()
 
-    def _overlay_hud(self, dark_t):
-        glMatrixMode(GL_PROJECTION)
-        glPushMatrix()
-        glLoadIdentity()
+    # ─── HUD ───────────────────────────────────────────────────
+
+    def _hud(self, dark_t):
+        glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity()
         glOrtho(0, WIDTH, HEIGHT, 0, -1, 1)
-        glMatrixMode(GL_MODELVIEW)
-        glPushMatrix()
-        glLoadIdentity()
-        glDisable(GL_DEPTH_TEST)
-        glDisable(GL_LIGHTING)
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
+        glDisable(GL_DEPTH_TEST); glDisable(GL_LIGHTING)
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
         surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         surf.fill((0, 0, 0, 0))
 
+        ps = {'approach':'Mendekat','peak':'PUNCAK','recede':'Berlalu','idle':''}
         labels = []
-
-        # Status gerhana
-        solar_phase = self.solar_ctrl.phase
-        lunar_phase = self.lunar_ctrl.phase
-
-        if solar_phase != 'idle':
-            pct = int(self._smooth_solar * 100)
-            phase_labels = {
-                'approach': 'Mendekat', 'peak': 'PUNCAK',
-                'recede': 'Berlalu', 'idle': ''
-            }
+        if self.solar_ctrl.phase != 'idle':
             labels.append((
-                f"☀ GERHANA MATAHARI — {pct}% [{phase_labels.get(solar_phase,'')}]",
-                (255, 200, 80)
+                f"☀  GERHANA MATAHARI  {int(self._ss*100)}%  [{ps[self.solar_ctrl.phase]}]",
+                (255, 215, 80)
             ))
-
-        if lunar_phase != 'idle':
-            pct = int(self._smooth_lunar * 100)
-            phase_labels = {
-                'approach': 'Mendekat', 'peak': 'PUNCAK',
-                'recede': 'Berlalu', 'idle': ''
-            }
+        if self.lunar_ctrl.phase != 'idle':
             labels.append((
-                f"🌙 GERHANA BULAN — {pct}% [{phase_labels.get(lunar_phase,'')}]",
-                (255, 120, 70)
+                f"🌙  GERHANA BULAN  {int(self._sl*100)}%  [{ps[self.lunar_ctrl.phase]}]",
+                (255, 135, 75)
             ))
-
-        # Kontrol hint
-        if self.free_cam_active:
-            labels.append(("📷 FREE CAM — W/A/S/D gerak | Q/E naik-turun | SHIFT cepat | F keluar", (180, 255, 180)))
+        if self.free_cam:
+            labels.append(("📷  FREE CAM — W/A/S/D  Q naik-turun  SHIFT cepat  F keluar",
+                            (160, 255, 160)))
         else:
-            labels.append(("[F] Free Camera  [Drag] Putar  [Scroll] Kota↔Angkasa  [SPACE] Percepat Gerhana  [R] Reset", (200, 200, 200)))
-
+            labels.append(("[F] Free Cam  [Drag] Putar  [Scroll] Kota↔Angkasa  [SPACE] Percepat x5  [R] Reset",
+                            (190, 190, 190)))
         if self.scroll_t < 0.05:
-            labels.append(("↓ Scroll ke bawah → Keluar Angkasa", (170, 200, 255)))
-        elif self.scroll_t > 0.95:
-            labels.append(("↑ Scroll ke atas → Kembali ke Kota", (170, 255, 200)))
+            labels.append(("Scroll ↓  untuk melihat Luar Angkasa", (160, 205, 255)))
+        elif self.scroll_t > 0.92:
+            labels.append(("Scroll ↑  untuk kembali ke Kota", (160, 255, 205)))
 
-        y_off = 10
-        for text, color in labels:
-            ts = self.font_sm.render(text, True, color)
-            # Background semi-transparan untuk keterbacaan
-            bg = pygame.Surface((ts.get_width() + 12, ts.get_height() + 4), pygame.SRCALPHA)
-            bg.fill((0, 0, 0, 110))
-            surf.blit(bg, (5, y_off - 2))
-            surf.blit(ts, (11, y_off))
-            y_off += 24
+        y = 10
+        for txt, col in labels:
+            ts = self.font_s.render(txt, True, col)
+            bg = pygame.Surface((ts.get_width() + 14, ts.get_height() + 5), pygame.SRCALPHA)
+            bg.fill((0, 0, 0, 118))
+            surf.blit(bg, (5, y - 2))
+            surf.blit(ts, (12, y))
+            y += 22
 
-        # Judul besar saat puncak gerhana
-        if self._smooth_solar > 0.5:
-            alpha_title = int(smoothstep((self._smooth_solar - 0.5) * 2) * 255)
-            title_surf = self.font_big.render("GERHANA MATAHARI TOTAL", True, (255, 200, 60))
-            title_surf.set_alpha(alpha_title)
-            surf.blit(title_surf, (WIDTH//2 - title_surf.get_width()//2, HEIGHT//2 - 50))
+        # Judul tengah saat puncak gerhana
+        if self._ss > 0.55:
+            a = int(smoothstep((self._ss - 0.55) * 2.2) * 255)
+            ts = self.font_b.render("GERHANA MATAHARI TOTAL", True, (255, 215, 62))
+            ts.set_alpha(a)
+            surf.blit(ts, (WIDTH//2 - ts.get_width()//2, HEIGHT//2 - 55))
+        if self._sl > 0.55:
+            a = int(smoothstep((self._sl - 0.55) * 2.2) * 255)
+            ts = self.font_b.render("GERHANA BULAN TOTAL", True, (255, 110, 68))
+            ts.set_alpha(a)
+            surf.blit(ts, (WIDTH//2 - ts.get_width()//2, HEIGHT//2 - 20))
 
-        if self._smooth_lunar > 0.5:
-            alpha_title = int(smoothstep((self._smooth_lunar - 0.5) * 2) * 255)
-            title_surf = self.font_big.render("GERHANA BULAN TOTAL", True, (255, 100, 60))
-            title_surf.set_alpha(alpha_title)
-            surf.blit(title_surf, (WIDTH//2 - title_surf.get_width()//2, HEIGHT//2 - 20))
+        # Progress bars
+        self._bars(surf)
 
-        # Progress bar gerhana di bawah layar
-        self._draw_progress_bars(surf)
-
+        # Blit ke OpenGL
         data = pygame.image.tostring(surf, "RGBA", True)
-        tex = glGenTextures(1)
+        tex  = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, tex)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, WIDTH, HEIGHT, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, data)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        glEnable(GL_TEXTURE_2D)
-        glColor4f(1, 1, 1, 1)
+        glEnable(GL_TEXTURE_2D); glColor4f(1,1,1,1)
         glBegin(GL_QUADS)
         glTexCoord2f(0,0); glVertex2f(0, HEIGHT)
         glTexCoord2f(1,0); glVertex2f(WIDTH, HEIGHT)
         glTexCoord2f(1,1); glVertex2f(WIDTH, 0)
         glTexCoord2f(0,1); glVertex2f(0, 0)
         glEnd()
-        glDisable(GL_TEXTURE_2D)
-        glDeleteTextures([tex])
+        glDisable(GL_TEXTURE_2D); glDeleteTextures([tex])
+        glDisable(GL_BLEND); glEnable(GL_LIGHTING); glEnable(GL_DEPTH_TEST)
+        glMatrixMode(GL_PROJECTION); glPopMatrix()
+        glMatrixMode(GL_MODELVIEW);  glPopMatrix()
 
-        glDisable(GL_BLEND)
-        glEnable(GL_LIGHTING)
-        glEnable(GL_DEPTH_TEST)
-        glMatrixMode(GL_PROJECTION)
-        glPopMatrix()
-        glMatrixMode(GL_MODELVIEW)
-        glPopMatrix()
+    def _bars(self, surf):
+        bw, bh, mg = 270, 11, 20
+        yb = HEIGHT - 48
+        for ctrl, label, col, x in [
+            (self.solar_ctrl, "Gerhana Matahari", (255, 205, 80),  mg),
+            (self.lunar_ctrl, "Gerhana Bulan",    (255, 130, 80),  WIDTH - mg - bw),
+        ]:
+            ls = self.font_s.render(label, True, col)
+            surf.blit(ls, (x, yb - 17))
+            bg = pygame.Surface((bw, bh), pygame.SRCALPHA)
+            bg.fill((25, 25, 25, 155))
+            surf.blit(bg, (x, yb))
+            fw = int(bw * ctrl.intensity)
+            if fw > 0:
+                fill = pygame.Surface((fw, bh), pygame.SRCALPHA)
+                for px in range(fw):
+                    t2 = px / bw
+                    r  = int(lerp(col[0]*0.35, col[0], t2))
+                    g  = int(lerp(col[1]*0.35, col[1], t2))
+                    b  = int(lerp(col[2]*0.35, col[2], t2))
+                    pygame.draw.line(fill, (r, g, b, 200), (px, 0), (px, bh-1))
+                surf.blit(fill, (x, yb))
+            pygame.draw.rect(surf, (*col, 110), (x, yb, bw, bh), 1)
 
-    def _draw_progress_bars(self, surf):
-        """Progress bar siklus gerhana di bagian bawah layar."""
-        bar_w  = 280
-        bar_h  = 12
-        margin = 20
-        y_base = HEIGHT - 50
+    # ─── Event handler ─────────────────────────────────────────
 
-        controllers = [
-            (self.solar_ctrl, "☀ Solar Eclipse", (255, 200, 80),  margin),
-            (self.lunar_ctrl, "🌙 Lunar Eclipse", (255, 130, 80), WIDTH - margin - bar_w),
-        ]
-
-        for ctrl, label, color, x in controllers:
-            # Label
-            ls = self.font_sm.render(label, True, color)
-            surf.blit(ls, (x, y_base - 18))
-
-            # Background bar
-            bg_rect = pygame.Surface((bar_w, bar_h), pygame.SRCALPHA)
-            bg_rect.fill((30, 30, 30, 160))
-            surf.blit(bg_rect, (x, y_base))
-
-            # Fill intensitas
-            fill_w = int(bar_w * ctrl.intensity)
-            if fill_w > 0:
-                fill = pygame.Surface((fill_w, bar_h), pygame.SRCALPHA)
-                # Gradient warna
-                for px in range(fill_w):
-                    t = px / bar_w
-                    r = int(lerp(color[0] * 0.4, color[0], t))
-                    g = int(lerp(color[1] * 0.4, color[1], t))
-                    b = int(lerp(color[2] * 0.4, color[2], t))
-                    pygame.draw.line(fill, (r, g, b, 200), (px, 0), (px, bar_h - 1))
-                surf.blit(fill, (x, y_base))
-
-            # Border
-            pygame.draw.rect(surf, (*color, 120), (x, y_base, bar_w, bar_h), 1)
-
-            # Penanda fase
-            phases = EclipseController.PHASES
-            acc = 0.0
-            for ph_name, ph_frac in phases:
-                acc += ph_frac
-                if acc < 1.0:
-                    px = x + int(bar_w * acc)
-                    pygame.draw.line(surf, (200, 200, 200, 100), (px, y_base), (px, y_base + bar_h))
-
-    # ───── Event ─────
-
-    def _handle_events(self, dt):
-        for event in pygame.event.get():
-            if event.type == QUIT:
+    def _events(self, dt):
+        for ev in pygame.event.get():
+            if ev.type == QUIT:
                 self.running = False
-            elif event.type == KEYDOWN:
-                if event.key == K_ESCAPE:
+            elif ev.type == KEYDOWN:
+                if ev.key == K_ESCAPE:
                     self.running = False
-                elif event.key == K_f:
-                    self.free_cam_active = not self.free_cam_active
-                    if self.free_cam_active:
-                        
-                        pygame.event.set_grab(True)        
-                        pygame.mouse.set_visible(False)   
-                        # Reset rel mouse agar tidak lompat
+                elif ev.key == K_f:
+                    self.free_cam = not self.free_cam
+                    if self.free_cam:
+                        pygame.event.set_grab(True)
+                        pygame.mouse.set_visible(False)
                         pygame.mouse.get_rel()
                     else:
-                        pygame.event.set_grab(False)       
-                        pygame.mouse.set_visible(True)     
-                elif event.key == K_SPACE:
-                    self._space_held = True
-                elif event.key == K_r:
-                    # Reset: paksa ke fase idle
-                    self.solar_ctrl._phase_idx = 0
-                    self.solar_ctrl._phase_timer = 0.0
-                    self.lunar_ctrl._phase_idx = 0
-                    self.lunar_ctrl._phase_timer = 0.0
-                elif event.key == K_UP:
-                    self.target_scroll_t = max(0.0, self.target_scroll_t - 0.15)
-                elif event.key == K_DOWN:
-                    self.target_scroll_t = min(1.0, self.target_scroll_t + 0.15)
-            elif event.type == KEYUP:
-                if event.key == K_SPACE:
-                    self._space_held = False
-            elif event.type == MOUSEBUTTONDOWN:
-                if not self.free_cam_active:
-                    if event.button == 1:
-                        self.mouse_down = True
-                        self.last_mouse = event.pos
-                    elif event.button == 4:
-                        self.target_scroll_t = max(0.0, self.target_scroll_t - 0.12)
-                    elif event.button == 5:
-                        self.target_scroll_t = min(1.0, self.target_scroll_t + 0.12)
-            elif event.type == MOUSEBUTTONUP:
-                if event.button == 1:
-                    self.mouse_down = False
-            elif event.type == MOUSEMOTION:
-                if not self.free_cam_active and self.mouse_down:
-                    dx = event.pos[0] - self.last_mouse[0]
-                    dy = event.pos[1] - self.last_mouse[1]
-                    self.orbit_yaw   += dx * 0.4
-                    self.orbit_pitch  = clamp(self.orbit_pitch + dy * 0.3, 5.0, 70.0)
-                    self.last_mouse   = event.pos
+                        pygame.event.set_grab(False)
+                        pygame.mouse.set_visible(True)
+                elif ev.key == K_SPACE:
+                    self._boost = True
+                elif ev.key == K_r:
+                    for c in [self.solar_ctrl, self.lunar_ctrl]:
+                        c._pi = 0;  c._t = 0.0
+                elif ev.key in (K_UP, K_PAGEUP):
+                    self.target_st = max(0.0, self.target_st - 0.18)
+                elif ev.key in (K_DOWN, K_PAGEDOWN):
+                    self.target_st = min(1.0, self.target_st + 0.18)
+            elif ev.type == KEYUP:
+                if ev.key == K_SPACE:
+                    self._boost = False
+            elif ev.type == MOUSEBUTTONDOWN:
+                if not self.free_cam:
+                    if   ev.button == 1: self.mouse_dn = True;  self.last_m = ev.pos
+                    elif ev.button == 4: self.target_st = max(0.0, self.target_st - 0.13)
+                    elif ev.button == 5: self.target_st = min(1.0, self.target_st + 0.13)
+            elif ev.type == MOUSEBUTTONUP:
+                if ev.button == 1:
+                    self.mouse_dn = False
+            elif ev.type == MOUSEMOTION:
+                if not self.free_cam and self.mouse_dn:
+                    dx = ev.pos[0] - self.last_m[0]
+                    dy = ev.pos[1] - self.last_m[1]
+                    if self.scroll_t > 0.5:
+                        self.space_yaw   += dx * 0.38
+                        self.space_pitch  = clamp(self.space_pitch + dy * 0.28, -45, 70)
+                    else:
+                        self.o_yaw   += dx * 0.38
+                        self.o_pitch  = clamp(self.o_pitch + dy * 0.28, 5, 72)
+                    self.last_m = ev.pos
+
+    # ─── Loop utama ────────────────────────────────────────────
 
     def run(self):
-        print("=" * 65)
-        print("  SIMULASI GERHANA 3D — OpenGL Python (Updated)")
-        print("=" * 65)
-        print("  [F]      Toggle Free Camera (terbang bebas)")
-        print("  W/A/S/D  Gerak maju/kiri/mundur/kanan (free cam)")
-        print("  Q / E    Naik / turun (free cam)")
-        print("  SHIFT    Terbang lebih cepat (free cam)")
-        print("  SCROLL   Zoom kota ↔ Luar angkasa")
-        print("  DRAG     Putar kamera (orbit mode)")
-        print("  SPACE    Percepat gerhana (tahan)")
-        print("  R        Reset siklus gerhana")
-        print("  ESC      Keluar")
-        print("-" * 65)
-        print("  Gerhana terjadi otomatis dalam siklus. SPACE = fast-forward.")
-        print("=" * 65)
+        print("╔══════════════════════════════════════════════════════╗")
+        print("║      SIMULASI GERHANA 3D v5  —  OpenGL Python       ║")
+        print("╠══════════════════════════════════════════════════════╣")
+        print("║  [F]   Free Camera   |  W/A/S/D  Q/E  SHIFT-cepat  ║")
+        print("║  Drag  Putar kamera  |  Scroll   Kota <-> Angkasa   ║")
+        print("║  SPACE Percepat x5   |  R Reset  |  ESC Keluar      ║")
+        print("╠══════════════════════════════════════════════════════╣")
+        print("║  Gerhana OTOMATIS looping. SPACE = fast-forward x5  ║")
+        print("╚══════════════════════════════════════════════════════╝")
 
-        prev_time = time.time()
+        prev = time.time()
         while self.running:
-            cur_time  = time.time()
-            dt        = min(cur_time - prev_time, 0.05)
-            prev_time = cur_time
-
-            self._handle_events(dt)
+            now  = time.time()
+            dt   = min(now - prev, 0.05)
+            prev = now
+            self._events(dt)
             self._update(dt)
             self._render()
             self.clock.tick(FPS)
@@ -1228,8 +1586,8 @@ class EclipseSimulation:
         pygame.quit()
         sys.exit()
 
-# ─────────────────────────── ENTRY POINT ─────────────────────────
+
+# ══════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
-    sim = EclipseSimulation()
-    sim.run()
+    EclipseSimulation().run()
