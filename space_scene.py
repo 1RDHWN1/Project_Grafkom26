@@ -53,6 +53,7 @@ class SpaceScene:
              random.uniform(-3000, 3000), random.uniform(0.5, 1.0)) 
             for _ in range(5000)
         ]
+        self._star_list = None
         
         # --- FITUR BINTANG JATUH ---
         self.shooting_stars = [] 
@@ -62,7 +63,18 @@ class SpaceScene:
         self.earth_tilt  = 23.5
         
         self._orbit_list = None
+        self._compile_stars()
         self._compile_orbits()
+
+    def _compile_stars(self):
+        self._star_list = glGenLists(1)
+        glNewList(self._star_list, GL_COMPILE)
+        glBegin(GL_POINTS)
+        for sx, sy, sz, br in self.stars:
+            glColor3f(br * 0.90, br * 0.95, br)
+            glVertex3f(sx, sy, sz)
+        glEnd()
+        glEndList()
 
     def _compile_orbits(self):
         self._orbit_list = glGenLists(2)
@@ -125,11 +137,7 @@ class SpaceScene:
         # 1. Gambar Bintang Diam
         glDisable(GL_LIGHTING)
         glPointSize(2.0)
-        glBegin(GL_POINTS)
-        for sx, sy, sz, br in self.stars:
-            glColor3f(br * (0.80 + 0.20 * math.sin(sim_time * 1.5 + sx * 0.01)), br, br)
-            glVertex3f(sx, sy, sz)
-        glEnd()
+        glCallList(self._star_list)
         
         # --- 2. RENDER BINTANG JATUH ---
         glEnable(GL_BLEND)

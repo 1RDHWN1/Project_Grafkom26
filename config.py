@@ -16,6 +16,14 @@ FPS    = 60
 TITLE  = "Simulasi Gerhana 3D (Optimized & Modular)"
 
 # ───────────────────────────────────────────────────────────
+# 1B. PENGATURAN PERFORMA
+# ───────────────────────────────────────────────────────────
+# Cache geometry kota statis ke OpenGL display list per level cahaya.
+# Ini mengurangi ribuan draw call Python setiap frame.
+PERFORMANCE_STATIC_CITY_CACHE = True
+CITY_STATIC_LIGHT_BUCKETS = 32
+
+# ───────────────────────────────────────────────────────────
 # 2. PENGATURAN WARNA LANGIT (Format RGB 0.0 - 1.0)
 # ───────────────────────────────────────────────────────────
 # Warna langit ini akan bertransisi secara halus tergantung

@@ -78,6 +78,9 @@ class EclipseSimulation:
         pygame.init()
         pygame.display.set_caption(TITLE)
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), DOUBLEBUF | OPENGL)
+        print("OpenGL Renderer:", glGetString(GL_RENDERER).decode())
+        print("OpenGL Vendor:", glGetString(GL_VENDOR).decode())
+        print("OpenGL Version:", glGetString(GL_VERSION).decode())
         
         # ========================================================
         # TAMBAHAN 2: INISIALISASI AUDIO BGM
@@ -147,6 +150,10 @@ class EclipseSimulation:
         
         self.font_b = pygame.font.SysFont('Arial', 22, bold=True)
         self.font_s = pygame.font.SysFont('Arial', 14)
+        self._hud_tex = None
+        self._hud_data = None
+        self._hud_next_update = 0.0
+        self._hud_update_interval = 1.0 / 20.0
         
         self.clock = pygame.time.Clock()
         self.running = True
@@ -285,51 +292,62 @@ class EclipseSimulation:
         glOrtho(0, WIDTH, HEIGHT, 0, -1, 1); glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
         glDisable(GL_DEPTH_TEST); glDisable(GL_LIGHTING)
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        
-        surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA); surf.fill((0, 0, 0, 0))
-        ps = {'approach': 'Mendekat', 'peak': 'PUNCAK', 'recede': 'Berlalu', 'idle': ''}
-        labels = []
-        
-        if self.solar_ctrl.phase != 'idle': labels.append((f"GERHANA MATAHARI {int(self._ss*100)}% [{ps[self.solar_ctrl.phase]}]", (255, 215, 80)))
-        if self.lunar_ctrl.phase != 'idle': labels.append((f"GERHANA BULAN {int(self._sl*100)}% [{ps[self.lunar_ctrl.phase]}]", (255, 135, 75)))
-            
-        if self.free_cam: labels.append(("FREE CAM AKTIF — W/A/S/D | Q/E | SHIFT | Tekan F untuk Keluar", (160, 255, 160)))
-        else: labels.append(("[F] Free Cam  [Drag] Putar  [Scroll] Dimensi  [SPACE] Percepat x5  [R] Reset Orbit", (200, 200, 200)))
-        
-        y = 10
-        for txt, col in labels:
-            ts = self.font_s.render(txt, True, col)
-            bg = pygame.Surface((ts.get_width() + 14, ts.get_height() + 5), pygame.SRCALPHA); bg.fill((0, 0, 0, 110))
-            surf.blit(bg, (5, y - 2)); surf.blit(ts, (12, y)); y += 22
-            
-        if self._ss > 0.55:
-            ts = self.font_b.render("GERHANA MATAHARI TOTAL", True, (255, 215, 62)); ts.set_alpha(int(smoothstep((self._ss - 0.55) * 2.2) * 255))
-            surf.blit(ts, (WIDTH // 2 - ts.get_width() // 2, HEIGHT // 2 - 55))
-        if self._sl > 0.55:
-            ts = self.font_b.render("GERHANA BULAN TOTAL", True, (255, 110, 68)); ts.set_alpha(int(smoothstep((self._sl - 0.55) * 2.2) * 255))
-            surf.blit(ts, (WIDTH // 2 - ts.get_width() // 2, HEIGHT // 2 - 20))
-            
-        bw, bh, mg = 270, 11, 20; yb = HEIGHT - 48
-        for ctrl, label, col, x in [(self.solar_ctrl, "Posisi Orbit Matahari", (255, 205, 80), mg), (self.lunar_ctrl, "Posisi Orbit Bulan", (255, 130, 80), WIDTH - mg - bw)]:
-            surf.blit(self.font_s.render(label, True, col), (x, yb - 17))
-            bg = pygame.Surface((bw, bh), pygame.SRCALPHA); bg.fill((25, 25, 25, 150)); surf.blit(bg, (x, yb))
-            fw = int(bw * ctrl.intensity)
-            if fw > 0:
-                fill = pygame.Surface((fw, bh), pygame.SRCALPHA)
-                for px in range(fw): pygame.draw.line(fill, (int(lerp(col[0]*0.35, col[0], px/bw)), int(lerp(col[1]*0.35, col[1], px/bw)), int(lerp(col[2]*0.35, col[2], px/bw)), 200), (px, 0), (px, bh - 1))
-                surf.blit(fill, (x, yb))
-            pygame.draw.rect(surf, (*col, 105), (x, yb, bw, bh), 1)
-            
-        data = pygame.image.tostring(surf, "RGBA", True)
-        tex = glGenTextures(1); glBindTexture(GL_TEXTURE_2D, tex)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, WIDTH, HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+
+        should_update = self._hud_data is None or self.sim_time >= self._hud_next_update
+        if should_update:
+            self._hud_next_update = self.sim_time + self._hud_update_interval
+            surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA); surf.fill((0, 0, 0, 0))
+            ps = {'approach': 'Mendekat', 'peak': 'PUNCAK', 'recede': 'Berlalu', 'idle': ''}
+            labels = []
+
+            if self.solar_ctrl.phase != 'idle': labels.append((f"GERHANA MATAHARI {int(self._ss*100)}% [{ps[self.solar_ctrl.phase]}]", (255, 215, 80)))
+            if self.lunar_ctrl.phase != 'idle': labels.append((f"GERHANA BULAN {int(self._sl*100)}% [{ps[self.lunar_ctrl.phase]}]", (255, 135, 75)))
+
+            if self.free_cam: labels.append(("FREE CAM AKTIF — W/A/S/D | Q/E | SHIFT | Tekan F untuk Keluar", (160, 255, 160)))
+            else: labels.append(("[F] Free Cam  [Drag] Putar  [Scroll] Dimensi  [SPACE] Percepat x5  [R] Reset Orbit", (200, 200, 200)))
+
+            y = 10
+            for txt, col in labels:
+                ts = self.font_s.render(txt, True, col)
+                bg = pygame.Surface((ts.get_width() + 14, ts.get_height() + 5), pygame.SRCALPHA); bg.fill((0, 0, 0, 110))
+                surf.blit(bg, (5, y - 2)); surf.blit(ts, (12, y)); y += 22
+
+            if self._ss > 0.55:
+                ts = self.font_b.render("GERHANA MATAHARI TOTAL", True, (255, 215, 62)); ts.set_alpha(int(smoothstep((self._ss - 0.55) * 2.2) * 255))
+                surf.blit(ts, (WIDTH // 2 - ts.get_width() // 2, HEIGHT // 2 - 55))
+            if self._sl > 0.55:
+                ts = self.font_b.render("GERHANA BULAN TOTAL", True, (255, 110, 68)); ts.set_alpha(int(smoothstep((self._sl - 0.55) * 2.2) * 255))
+                surf.blit(ts, (WIDTH // 2 - ts.get_width() // 2, HEIGHT // 2 - 20))
+
+            bw, bh, mg = 270, 11, 20; yb = HEIGHT - 48
+            for ctrl, label, col, x in [(self.solar_ctrl, "Posisi Orbit Matahari", (255, 205, 80), mg), (self.lunar_ctrl, "Posisi Orbit Bulan", (255, 130, 80), WIDTH - mg - bw)]:
+                surf.blit(self.font_s.render(label, True, col), (x, yb - 17))
+                bg = pygame.Surface((bw, bh), pygame.SRCALPHA); bg.fill((25, 25, 25, 150)); surf.blit(bg, (x, yb))
+                fw = int(bw * ctrl.intensity)
+                if fw > 0:
+                    fill = pygame.Surface((fw, bh), pygame.SRCALPHA)
+                    for px in range(fw): pygame.draw.line(fill, (int(lerp(col[0]*0.35, col[0], px/bw)), int(lerp(col[1]*0.35, col[1], px/bw)), int(lerp(col[2]*0.35, col[2], px/bw)), 200), (px, 0), (px, bh - 1))
+                    surf.blit(fill, (x, yb))
+                pygame.draw.rect(surf, (*col, 105), (x, yb, bw, bh), 1)
+
+            self._hud_data = pygame.image.tostring(surf, "RGBA", True)
+
+        if self._hud_tex is None:
+            self._hud_tex = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, self._hud_tex)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, WIDTH, HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, self._hud_data)
+        else:
+            glBindTexture(GL_TEXTURE_2D, self._hud_tex)
+            if should_update:
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, WIDTH, HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, self._hud_data)
         glEnable(GL_TEXTURE_2D); glColor4f(1, 1, 1, 1)
         glBegin(GL_QUADS)
         glTexCoord2f(0, 0); glVertex2f(0, HEIGHT); glTexCoord2f(1, 0); glVertex2f(WIDTH, HEIGHT)
         glTexCoord2f(1, 1); glVertex2f(WIDTH, 0); glTexCoord2f(0, 1); glVertex2f(0, 0)
         glEnd()
-        glDisable(GL_TEXTURE_2D); glDeleteTextures([tex])
+        glDisable(GL_TEXTURE_2D)
         glDisable(GL_BLEND); glEnable(GL_LIGHTING); glEnable(GL_DEPTH_TEST)
         glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW); glPopMatrix()
 

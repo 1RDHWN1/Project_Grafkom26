@@ -14,15 +14,21 @@ from OpenGL.GLU import *
 
 # Import dari file modular kita sebelumnya
 from config import *
-from gl_engine import draw_sph, draw_cyl, raw_sph, set_mat, lerp, lerp3, smoothstep, clamp
+from gl_engine import draw_sph, draw_cyl, raw_sph, set_mat, lerp, lerp3, smoothstep, clamp, warm_geometry_cache
 # ───────────────────────────────────────────────────────────
 # OPTIMASI DISPLAY LIST UNTUK KOTAK (FAST CUBE)
 # ───────────────────────────────────────────────────────────
 _CUBE_LIST = None
+_CLOUD_LIST = None
+_CAR_BODY_LIST = None
+_CAR_ROOF_LIST = None
+_CAR_TRIM_LIST = None
+_CAR_HEADLIGHT_LIST = None
+_CAR_TAILLIGHT_LIST = None
 
 def init_fast_geometry():
     """Merekam bentuk kubus 1x1x1 ke dalam memori GPU satu kali saja."""
-    global _CUBE_LIST
+    global _CUBE_LIST, _CLOUD_LIST, _CAR_BODY_LIST, _CAR_ROOF_LIST, _CAR_TRIM_LIST, _CAR_HEADLIGHT_LIST, _CAR_TAILLIGHT_LIST
     if _CUBE_LIST is None:
         _CUBE_LIST = glGenLists(1)
         glNewList(_CUBE_LIST, GL_COMPILE)
@@ -40,6 +46,60 @@ def init_fast_geometry():
             glNormal3f(nx, ny, nz)
             for v in vs: glVertex3f(*v)
         glEnd()
+        glEndList()
+
+    if _CLOUD_LIST is None:
+        _CLOUD_LIST = glGenLists(1)
+        glNewList(_CLOUD_LIST, GL_COMPILE)
+        for x, y, z, sx, sy, sz in [
+            (0.0, 0.0, 0.0, 16.0, 6.0, 12.0),
+            (4.0, 3.0, -2.0, 10.0, 8.0, 8.0),
+            (-5.0, 2.0, 3.0, 8.0, 6.0, 8.0),
+        ]:
+            glPushMatrix()
+            glTranslatef(x, y, z)
+            glScalef(sx, sy, sz)
+            glCallList(_CUBE_LIST)
+            glPopMatrix()
+        glEndList()
+
+    def cube_list_item(x, y, z, sx, sy, sz):
+        glPushMatrix()
+        glTranslatef(x, y, z)
+        glScalef(sx, sy, sz)
+        glCallList(_CUBE_LIST)
+        glPopMatrix()
+
+    if _CAR_BODY_LIST is None:
+        _CAR_BODY_LIST = glGenLists(1)
+        glNewList(_CAR_BODY_LIST, GL_COMPILE)
+        cube_list_item(0, 0.625, 0, 4.0, 1.25, 1.8)
+        glEndList()
+
+    if _CAR_ROOF_LIST is None:
+        _CAR_ROOF_LIST = glGenLists(1)
+        glNewList(_CAR_ROOF_LIST, GL_COMPILE)
+        cube_list_item(0, 1.42, 0, 2.4, 0.72, 1.58)
+        glEndList()
+
+    if _CAR_TRIM_LIST is None:
+        _CAR_TRIM_LIST = glGenLists(1)
+        glNewList(_CAR_TRIM_LIST, GL_COMPILE)
+        cube_list_item(0, 0.90, 0, 4.02, 0.18, 1.82)
+        glEndList()
+
+    if _CAR_HEADLIGHT_LIST is None:
+        _CAR_HEADLIGHT_LIST = glGenLists(1)
+        glNewList(_CAR_HEADLIGHT_LIST, GL_COMPILE)
+        for sz in (-0.62, 0.62):
+            cube_list_item(2.08, 0.68, sz, 0.11, 0.34, 0.40)
+        glEndList()
+
+    if _CAR_TAILLIGHT_LIST is None:
+        _CAR_TAILLIGHT_LIST = glGenLists(1)
+        glNewList(_CAR_TAILLIGHT_LIST, GL_COMPILE)
+        for sz in (-0.62, 0.62):
+            cube_list_item(-2.08, 0.68, sz, 0.11, 0.30, 0.35)
         glEndList()
 
 def draw_box_fast(cx, cy, cz, sx, sy, sz, color, shin=32.0, spec=0.25, emit=(0,0,0)):
@@ -194,7 +254,7 @@ class Building:
             for col in range(cols):
                 wx=-w/2+(col+0.5)*(w/cols)+random.uniform(-0.2,0.2)
                 wy=3+row*(h-4)/max(rows-1,1)
-                self.windows.append((wx,wy,random.random()>0.32,random.random()>0.82,random.random()*6.28))
+                self.windows.append((wx,wy,random.random()>0.32,random.random()>0.82,random.random()*6.28,random.uniform(0.65,1.0)))
         self.has_ant=h>60 and random.random()>0.4
 
     def draw(self,dark_t,sim_time=0.0):
@@ -224,10 +284,10 @@ class Building:
             draw_sph(self.x,h+12.5,self.z,0.42,8,6,(0.90,0.10,0.10),lerp3((0,0,0),(1.0,0.1,0.1),clamp(dark_t*2,0,1)),18)
             
         if dark_t>0.08:
-            for wx,wy,lit,flk,fp in self.windows:
+            for wx,wy,lit,flk,fp,base_intensity in self.windows:
                 if not lit: continue
                 fl=(0.85+0.15*math.sin(sim_time*5.8+fp)) if flk else 1.0
-                intensity=smoothstep(dark_t)*random.uniform(0.65,1.0)*fl
+                intensity=smoothstep(dark_t)*base_intensity*fl
                 wc=lerp3((0,0,0),(1.0,0.96,0.68),intensity) if sum(self.ca)>2.1 else lerp3((0,0,0),(0.72,0.90,1.00),intensity)
                 em2=wc if intensity>0.42 else (0,0,0)
                 draw_box_fast(self.x+wx,wy,self.z+self.d/2+0.07,1.0,1.2,0.12,wc,4,0.0,emit=em2)
@@ -291,11 +351,13 @@ class Cloud:
         # Warna awan: Putih bersih saat siang, berubah jadi abu-abu gelap saat gerhana
         c = lerp3((0.98, 0.98, 0.98), (0.15, 0.15, 0.18), dark_t)
         s = self.scale
-        
-        # Menggambar 3 kotak yang ditumpuk menjadi bentuk awan
-        draw_box_fast(self.x, self.y, self.z, 16*s, 6*s, 12*s, c, 5, 0.0)
-        draw_box_fast(self.x + 4*s, self.y + 3*s, self.z - 2*s, 10*s, 8*s, 8*s, c, 5, 0.0)
-        draw_box_fast(self.x - 5*s, self.y + 2*s, self.z + 3*s, 8*s, 6*s, 8*s, c, 5, 0.0)
+
+        set_mat(*c, spec=0.0, shin=5)
+        glPushMatrix()
+        glTranslatef(self.x, self.y, self.z)
+        glScalef(s, s, s)
+        glCallList(_CLOUD_LIST)
+        glPopMatrix()
 
 
 # ───────────────────────────────────────────────────────────
@@ -344,14 +406,21 @@ class Car:
     def draw(self,dark_t):
         glPushMatrix();glTranslatef(self.x,0,self.z);glRotatef(self._angle,0,1,0)
         c=self.color;rc=self.roof_c
-        draw_box_fast(0,0.625,0,self.l,self.h,self.w,c,60)
-        draw_box_fast(0,1.42,0,self.l*0.60,0.72,self.w*0.88,(0.06,0.10,0.20),90,0.72)
-        draw_box_fast(0,0.90,0,self.l+0.02,0.18,self.w+0.02,rc,38,0.38)
+        set_mat(*c, spec=0.25, shin=60)
+        glCallList(_CAR_BODY_LIST)
+        set_mat(0.06,0.10,0.20, spec=0.72, shin=90)
+        glCallList(_CAR_ROOF_LIST)
+        set_mat(*rc, spec=0.38, shin=38)
+        glCallList(_CAR_TRIM_LIST)
         
         hl=lerp3((0,0,0),(1,0.98,0.88),clamp(dark_t*3.5,0,1))
-        for sz in (-0.62,0.62): draw_box_fast(self.l/2+0.08,0.68,sz,0.11,0.34,0.40,(1,0.98,0.90),8,0.1,emit=hl)
+        set_mat(1,0.98,0.90, spec=0.1, shin=8, emit=hl)
+        glCallList(_CAR_HEADLIGHT_LIST)
+        glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, [0, 0, 0, 1])
         bc=(1,0.08,0.05) if self.stopped else (0.52,0,0)
-        for sz in (-0.62,0.62): draw_box_fast(-self.l/2-0.08,0.68,sz,0.11,0.30,0.35,bc,8,0.0,emit=lerp3((0,0,0),bc,clamp(dark_t*2.5,0,1)))
+        set_mat(*bc, spec=0.0, shin=8, emit=lerp3((0,0,0),bc,clamp(dark_t*2.5,0,1)))
+        glCallList(_CAR_TAILLIGHT_LIST)
+        glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, [0, 0, 0, 1])
         
         for wx,wz in [(1.22,0.96),(1.22,-0.96),(-1.22,0.96),(-1.22,-0.96)]:
             glPushMatrix();glTranslatef(wx,0.14,wz);glRotatef(90,0,1,0);glRotatef(self._wr,1,0,0)
@@ -371,11 +440,15 @@ class TrafficLight:
         self._t+=dt
         if self._t>=self.PHASES[self._pi][1]:
             self._t-=self.PHASES[self._pi][1];self._pi=(self._pi+1)%3;self.state=self.PHASES[self._pi][0]
-    def draw(self):
+    def draw_body(self):
         draw_cyl(self.x,0,self.z,0.16,0.16,10,8,(0.12,0.12,0.12))
         draw_box_fast(self.x,11,self.z,0.85,3.0,0.72,(0.06,0.06,0.06))
+    def draw_lights(self):
         for y,bc,sn in [(12.3,(0.7,0,0),'red'),(11.0,(0.6,0.5,0),'yellow'),(9.7,(0,0.6,0),'green')]:
             draw_sph(self.x,y,self.z-0.04,0.30,10,7,bc,bc if self.state==sn else (0,0,0),20)
+    def draw(self):
+        self.draw_body()
+        self.draw_lights()
 
 # ───────────────────────────────────────────────────────────
 # CITY MANAGER UTAMA
@@ -383,9 +456,14 @@ class TrafficLight:
 class City:
     def __init__(self):
         init_fast_geometry() # WAJIB DIPANGGIL! Compile kotak ke GPU
+        warm_geometry_cache(
+            sphere_keys=[(6,5), (8,6), (10,7), (12,8)],
+            cylinder_segments=[4, 6, 8, 12],
+        )
         self.buildings=[]; self.houses=[]; self.trees=[]
         self.tls=[]; self.cars=[]; self.lamps=[]
         self.clouds=[]
+        self._static_lists = {}
         self._build()
 
     def _build(self):
@@ -428,15 +506,38 @@ class City:
         for cl in self.clouds: cl.update(dt)
 
     def draw(self,dark_t,sim_time=0.0):
+        if PERFORMANCE_STATIC_CITY_CACHE:
+            self._draw_static_cached(dark_t)
+        else:
+            self._draw_static(dark_t, sim_time)
+
+        for tl in self.tls:       tl.draw_lights()
+        for c  in self.cars:      c.draw(dark_t)
+        for cl in self.clouds:    cl.draw(dark_t)
+
+    def _draw_static(self,dark_t,sim_time=0.0):
         self._ground(dark_t)
         for b  in self.buildings: b.draw(dark_t,sim_time)
         for h  in self.houses:    h.draw(dark_t)
         for t  in self.trees:     t.draw(dark_t)
-        for tl in self.tls:       tl.draw()
-        for c  in self.cars:      c.draw(dark_t)
-        for cl in self.clouds:    cl.draw(dark_t)
+        for tl in self.tls:       tl.draw_body()
         self._lamps(dark_t)
         self._park(dark_t)
+
+    def _draw_static_cached(self,dark_t):
+        bucket_count = max(1, CITY_STATIC_LIGHT_BUCKETS)
+        bucket = int(round(clamp(dark_t, 0.0, 1.0) * bucket_count))
+        list_id = self._static_lists.get(bucket)
+
+        if list_id is None:
+            list_id = glGenLists(1)
+            self._static_lists[bucket] = list_id
+            bucket_dark = bucket / bucket_count
+            glNewList(list_id, GL_COMPILE)
+            self._draw_static(bucket_dark, 0.0)
+            glEndList()
+
+        glCallList(list_id)
 
     def _ground(self,dt):
         rc, wc = lerp3((0.18,0.18,0.18),(0.04,0.04,0.07),dt), lerp3((0.42,0.38,0.30),(0.12,0.10,0.09),dt)

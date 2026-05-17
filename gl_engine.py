@@ -42,6 +42,8 @@ def ease_sine(t):
 # Menyimpan satu instance Quadric di memori global.
 # Menghindari alokasi/dealokasi Quadric setiap frame yang bikin drop FPS.
 _GLOBAL_QUADRIC = None
+_SPHERE_LISTS = {}
+_CYLINDER_LISTS = {}
 
 def get_quadric():
     global _GLOBAL_QUADRIC
@@ -49,6 +51,38 @@ def get_quadric():
         _GLOBAL_QUADRIC = gluNewQuadric()
         gluQuadricNormals(_GLOBAL_QUADRIC, GLU_SMOOTH)
     return _GLOBAL_QUADRIC
+
+def get_sphere_list(sl, st):
+    key = (int(sl), int(st))
+    list_id = _SPHERE_LISTS.get(key)
+    if list_id is None:
+        list_id = glGenLists(1)
+        _SPHERE_LISTS[key] = list_id
+        glNewList(list_id, GL_COMPILE)
+        gluSphere(get_quadric(), 1.0, sl, st)
+        glEndList()
+    return list_id
+
+def get_cylinder_list(sl):
+    key = int(sl)
+    list_id = _CYLINDER_LISTS.get(key)
+    if list_id is None:
+        list_id = glGenLists(1)
+        _CYLINDER_LISTS[key] = list_id
+        glNewList(list_id, GL_COMPILE)
+        q = get_quadric()
+        gluCylinder(q, 1.0, 1.0, 1.0, sl, 1)
+        gluDisk(q, 0, 1.0, sl, 1)
+        glTranslatef(0, 0, 1.0)
+        gluDisk(q, 0, 1.0, sl, 1)
+        glEndList()
+    return list_id
+
+def warm_geometry_cache(sphere_keys=(), cylinder_segments=()):
+    for sl, st in sphere_keys:
+        get_sphere_list(sl, st)
+    for sl in cylinder_segments:
+        get_cylinder_list(sl)
 
 # ───────────────────────────────────────────────────────────
 # 3. FUNGSI MATERIAL OPENGL
@@ -100,10 +134,9 @@ def draw_sph(cx, cy, cz, r, sl=18, st=10, color=(1.0, 1.0, 1.0), emit=(0.0, 0.0,
     set_mat(*color, spec=spec, shin=shin, emit=emit)
     glPushMatrix()
     glTranslatef(cx, cy, cz)
+    glScalef(r, r, r)
     
-    # Gunakan Quadric yang sudah dioptimasi
-    q = get_quadric()
-    gluSphere(q, r, sl, st)
+    glCallList(get_sphere_list(sl, st))
     
     glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, [0.0, 0.0, 0.0, 1.0])
     glPopMatrix()
@@ -116,14 +149,16 @@ def draw_cyl(cx, cy, cz, br, tr, h, sl=10, color=(0.5, 0.5, 0.5)):
     
     # PUTAR 90 DERAJAT AGAR SILINDER BERDIRI TEGAK KE ATAS (SUMBU Y)
     glRotatef(-90, 1, 0, 0)
-    
+
     q = get_quadric()
-    gluCylinder(q, br, tr, h, sl, 1)
-    
-    # Tutup silinder bawah dan atas
-    gluDisk(q, 0, br, sl, 1)
-    glTranslatef(0, 0, h)
-    gluDisk(q, 0, tr, sl, 1)
+    if abs(br - tr) < 1e-6:
+        glScalef(br, br, h)
+        glCallList(get_cylinder_list(sl))
+    else:
+        gluCylinder(q, br, tr, h, sl, 1)
+        gluDisk(q, 0, br, sl, 1)
+        glTranslatef(0, 0, h)
+        gluDisk(q, 0, tr, sl, 1)
     
     glPopMatrix()
 
@@ -131,8 +166,8 @@ def raw_sph(cx, cy, cz, r, sl=14, st=8):
     """Menggambar bola tanpa mengatur material (biasanya untuk halo/cahaya transparan)."""
     glPushMatrix()
     glTranslatef(cx, cy, cz)
+    glScalef(r, r, r)
     
-    q = get_quadric()
-    gluSphere(q, r, sl, st)
+    glCallList(get_sphere_list(sl, st))
     
     glPopMatrix()
